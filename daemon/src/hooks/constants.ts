@@ -42,8 +42,16 @@ export const TASK_DESCRIPTION_DISPLAY_MAX_LENGTH = 40;
 // ── Pixel Agents Server ─────────────────────────────────────
 export const SERVER_JSON_DIR = '.pixel-agents';
 export const SERVER_JSON_NAME = 'server.json';
+/** Daemon discovery file. Preferred over server.json when both are present
+ *  (the standalone daemon owns the hook server when running). */
+export const DAEMON_JSON_NAME = 'daemon.json';
 export const HOOK_SCRIPTS_DIR = '.pixel-agents/hooks';
 export const HOOK_API_PREFIX = '/api/hooks';
+
+/** Env var: full hook URL override (e.g. http://127.0.0.1:1234). Highest priority. */
+export const HOOK_URL_ENV = 'PIXEL_AGENTS_HOOK_URL';
+/** Env var: optional bearer token when using HOOK_URL_ENV. */
+export const HOOK_TOKEN_ENV = 'PIXEL_AGENTS_HOOK_TOKEN';
 
 // Claude-specific constants live in providers/hook/claude/constants.ts.
 // Re-exported here for backward-compatibility of existing callers that import

@@ -19,11 +19,75 @@ function writeServerJson(port: number, token: string): void {
   );
 }
 
-/** Run the hook script with given stdin, returns exit code. */
-function runHookScript(stdin: string): Promise<{ code: number | null; stdout: string }> {
+function writeDaemonJson(hookPort: number, token: string): void {
+  const dir = path.join(tmpBase, '.pixel-agents');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'daemon.json'),
+    JSON.stringify({
+      bootId: '00000000-0000-0000-0000-000000000000',
+      token,
+      pid: process.pid,
+      socketPath: path.join(dir, 'daemon.sock'),
+      hookPort,
+      startedAt: Date.now(),
+      version: '0.0.1',
+    }),
+  );
+}
+
+/**
+ * Spin up an HTTP server that captures POSTed body + Authorization header,
+ * then runs the hook script with provided HOME + env overrides.
+ */
+async function withReceiver<T>(
+  fn: (info: {
+    port: number;
+    received: Array<{ body: string; authorization: string | undefined }>;
+  }) => Promise<T>,
+): Promise<T> {
+  const received: Array<{ body: string; authorization: string | undefined }> = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c: Buffer) => (body += c.toString()));
+    req.on('end', () => {
+      received.push({
+        body,
+        authorization: (req.headers.authorization as string | undefined) ?? undefined,
+      });
+      res.writeHead(200);
+      res.end('ok');
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const port = (server.address() as { port: number }).port;
+    return await fn({ port, received });
+  } finally {
+    server.close();
+  }
+}
+
+/** Run the hook script with given stdin + env overrides; returns exit code. */
+function runHookScript(
+  stdin: string,
+  envExtra: Record<string, string | undefined> = {},
+): Promise<{ code: number | null; stdout: string }> {
   return new Promise((resolve) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: tmpBase };
+    // Always strip the discovery envs from the parent before applying overrides
+    // so a leaked var from the parent shell can't poison the test.
+    delete env.PIXEL_AGENTS_HOOK_URL;
+    delete env.PIXEL_AGENTS_HOOK_TOKEN;
+    for (const [key, value] of Object.entries(envExtra)) {
+      if (value === undefined) {
+        delete env[key];
+      } else {
+        env[key] = value;
+      }
+    }
     const child = spawn('node', [HOOK_SCRIPT], {
-      env: { ...process.env, HOME: tmpBase },
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 5000,
     });
@@ -127,5 +191,122 @@ describe('claude-hook.js integration', () => {
     server.close();
     expect(code).toBe(0);
     expect(elapsed).toBeLessThan(5000);
+  });
+
+  // ── Discovery chain: env override → daemon.json → server.json ──────
+
+  // 7. daemon.json with hookPort wins over server.json
+  it('prefers daemon.json over server.json when both are present', async () => {
+    skipIfNotBuilt();
+    if (!fs.existsSync(HOOK_SCRIPT)) return;
+
+    await withReceiver(async ({ port: daemonPort, received: daemonReceived }) => {
+      await withReceiver(async ({ port: legacyPort, received: legacyReceived }) => {
+        writeDaemonJson(daemonPort, 'daemon-tok');
+        writeServerJson(legacyPort, 'legacy-tok');
+
+        const { code } = await runHookScript(
+          JSON.stringify({ session_id: 'abc', hook_event_name: 'Stop' }),
+        );
+
+        expect(code).toBe(0);
+        expect(daemonReceived).toHaveLength(1);
+        expect(legacyReceived).toHaveLength(0);
+        expect(daemonReceived[0].authorization).toBe('Bearer daemon-tok');
+      });
+    });
+  });
+
+  // 8. daemon.json without hookPort falls through to server.json
+  it('falls back to server.json when daemon.json has no hookPort', async () => {
+    skipIfNotBuilt();
+    if (!fs.existsSync(HOOK_SCRIPT)) return;
+
+    await withReceiver(async ({ port: legacyPort, received: legacyReceived }) => {
+      // Write daemon.json WITHOUT hookPort (the Day-1/2 boot shape)
+      const dir = path.join(tmpBase, '.pixel-agents');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'daemon.json'),
+        JSON.stringify({
+          bootId: '00000000-0000-0000-0000-000000000000',
+          token: 'no-hookport',
+          pid: process.pid,
+          socketPath: path.join(dir, 'daemon.sock'),
+          startedAt: Date.now(),
+          version: '0.0.1',
+        }),
+      );
+      writeServerJson(legacyPort, 'legacy-tok');
+
+      const { code } = await runHookScript(
+        JSON.stringify({ session_id: 'abc', hook_event_name: 'Stop' }),
+      );
+
+      expect(code).toBe(0);
+      expect(legacyReceived).toHaveLength(1);
+      expect(legacyReceived[0].authorization).toBe('Bearer legacy-tok');
+    });
+  });
+
+  // 9. PIXEL_AGENTS_HOOK_URL env override beats both discovery files
+  it('env override wins over daemon.json and server.json', async () => {
+    skipIfNotBuilt();
+    if (!fs.existsSync(HOOK_SCRIPT)) return;
+
+    await withReceiver(async ({ port: envPort, received: envReceived }) => {
+      await withReceiver(async ({ port: daemonPort, received: daemonReceived }) => {
+        writeDaemonJson(daemonPort, 'daemon-tok');
+
+        const { code } = await runHookScript(
+          JSON.stringify({ session_id: 'abc', hook_event_name: 'Stop' }),
+          { PIXEL_AGENTS_HOOK_URL: `http://127.0.0.1:${envPort}` },
+        );
+
+        expect(code).toBe(0);
+        expect(envReceived).toHaveLength(1);
+        expect(daemonReceived).toHaveLength(0);
+        // No PIXEL_AGENTS_HOOK_TOKEN set → no Authorization header.
+        expect(envReceived[0].authorization).toBeUndefined();
+      });
+    });
+  });
+
+  // 10. PIXEL_AGENTS_HOOK_TOKEN attaches Bearer when env URL is used
+  it('attaches PIXEL_AGENTS_HOOK_TOKEN to env-URL requests', async () => {
+    skipIfNotBuilt();
+    if (!fs.existsSync(HOOK_SCRIPT)) return;
+
+    await withReceiver(async ({ port: envPort, received: envReceived }) => {
+      const { code } = await runHookScript(
+        JSON.stringify({ session_id: 'abc', hook_event_name: 'Stop' }),
+        {
+          PIXEL_AGENTS_HOOK_URL: `http://127.0.0.1:${envPort}`,
+          PIXEL_AGENTS_HOOK_TOKEN: 'env-token',
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(envReceived).toHaveLength(1);
+      expect(envReceived[0].authorization).toBe('Bearer env-token');
+    });
+  });
+
+  // 11. Malformed env URL silently falls through to discovery files
+  it('falls through to server.json when PIXEL_AGENTS_HOOK_URL is malformed', async () => {
+    skipIfNotBuilt();
+    if (!fs.existsSync(HOOK_SCRIPT)) return;
+
+    await withReceiver(async ({ port: legacyPort, received: legacyReceived }) => {
+      writeServerJson(legacyPort, 'legacy-tok');
+
+      const { code } = await runHookScript(
+        JSON.stringify({ session_id: 'abc', hook_event_name: 'Stop' }),
+        { PIXEL_AGENTS_HOOK_URL: 'not-a-url' },
+      );
+
+      expect(code).toBe(0);
+      expect(legacyReceived).toHaveLength(1);
+    });
   });
 });
