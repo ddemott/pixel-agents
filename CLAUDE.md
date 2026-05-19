@@ -5,32 +5,57 @@ VS Code extension with embedded React webview: pixel art office where AI agents 
 ## Architecture
 
 ```
-src/                          — Extension backend (Node.js, VS Code API)
+src/                          — Extension backend (VS Code API; CommonJS via esbuild)
   constants.ts                — Extension-only constants (VS Code IDs, key names)
-  extension.ts                — Entry: activate(), deactivate()
-  PixelAgentsViewProvider.ts   — WebviewViewProvider, message dispatch, asset loading, server lifecycle
+  extension.ts                — Entry: activate(), deactivate(); installs VsCodeTerminalRegistry + VsCodeAgentRuntime
+  PixelAgentsViewProvider.ts   — WebviewViewProvider, message dispatch, asset loading, server lifecycle; provides `sink` + `store` getters
   assetLoader.ts              — PNG parsing, sprite conversion, catalog building, default layout loading
-  agentManager.ts             — Terminal lifecycle: launch, remove, restore, persist
+  agentManager.ts             — Terminal lifecycle: launch, remove, restore, persist (decoupled from vscode via AgentEventSink/TerminalRegistry/AgentRuntime/AgentStateStore)
   configPersistence.ts        — User-level config file I/O (~/.pixel-agents/config.json), external asset directories
-  layoutPersistence.ts        — User-level layout file I/O (~/.pixel-agents/layout.json), migration, cross-window watching
-  fileWatcher.ts              — fs.watch + polling, readNewLines, /clear detection, terminal adoption
-  transcriptParser.ts         — JSONL parsing: tool_use/tool_result → webview messages
-  timerManager.ts             — Waiting/permission timer logic
-  types.ts                    — Shared interfaces (AgentState, PersistedAgent)
+  layoutPersistence.ts        — User-level layout file I/O (~/.pixel-agents/layout.json), migration, cross-window watching (takes AgentStateStore for legacy workspaceState migration)
+  fileWatcher.ts              — fs.watch + polling, readNewLines, /clear detection, terminal adoption (uses TerminalRegistry)
+  transcriptParser.ts         — JSONL parsing: tool_use/tool_result → AgentEventSink events
+  timerManager.ts             — Waiting/permission timer logic; emits via AgentEventSink
+  types.ts                    — Shared interfaces (AgentState, PersistedAgent); imports TerminalLike from terminalRegistry
+  messageSender.ts            — AgentEvent + AgentEventSink interface, WebviewSink/NullSink/RecordingSink impls (TUI port Phase 0)
+  terminalRegistry.ts         — TerminalLike + TerminalRegistry interface, module-level setter, NullTerminalRegistry impl (TUI port Phase 0)
+  agentRuntime.ts             — AgentRuntime (workspace folders) + AgentStateStore (workspaceState abstraction) interfaces (TUI port Phase 0)
 
-server/                       — Standalone server (Node.js, no VS Code deps except types)
+daemon/                       — Standalone daemon (TUI port Phase 1; ESM, Node 22)
+  package.json                — `pixel-agents-daemon` bin, type:module, vitest dep
+  tsconfig.json               — Excludes src/hooks (compiled separately via root tsconfig)
+  tsconfig.test.json          — Vitest type-check config; includes ../src/{types,timerManager,messageSender}
+  vitest.config.ts            — Test runner config (globals, 10s timeout)
   src/
-    server.ts                 — HTTP server: hook endpoint, health check, server.json discovery
-    hookEventHandler.ts       — Routes hook events to agents, buffers pre-registration events
-    constants.ts              — All timing/scanning constants (shared by extension + server)
-    providers/file/
-      claudeHookInstaller.ts  — Install/uninstall hooks in ~/.claude/settings.json
-      hooks/claude-hook.ts    — Hook script: reads stdin, POSTs to server (bundled to CJS by esbuild)
-  __tests__/                  — Vitest test suite
-    server.test.ts            — HTTP server lifecycle, auth, hooks, server.json
-    hookEventHandler.test.ts  — Event routing, buffering, timer cancellation
-    claudeHookInstaller.test.ts — Hook install/uninstall in settings.json
-    claude-hook.test.ts       — Integration: spawns real hook script process
+    server.ts                 — Daemon entrypoint: boot, read config.json, bind UDS, write daemon.json, SIGTERM/SIGINT
+    discovery.ts              — Atomic read/write daemon.json, PID liveness check
+    config.ts                 — Reads ~/.pixel-agents/config.json (structurally compatible with src/configPersistence.ts)
+    paths.ts                  — ~/.pixel-agents/* path constants (DAEMON_JSON_PATH, DAEMON_SOCKET_PATH, CONFIG_JSON_PATH)
+    hooks/                    — Ported from former server/src/ (CJS subtree via package.json type:commonjs)
+      package.json            — {"type": "commonjs"} — scopes hooks/ to CJS so the VS Code extension can import without ESM interop
+      httpServer.ts           — HTTP hook server (was server.ts); endpoint, auth, server.json discovery
+      eventHandler.ts         — Routes hook events to agents (was hookEventHandler.ts), buffers pre-registration events; takes `getSink: () => AgentEventSink`
+      constants.ts            — All timing/scanning constants; adds DAEMON_JSON_NAME, HOOK_URL_ENV, HOOK_TOKEN_ENV
+      provider.ts             — HookProvider interface + normalized AgentEvent union
+      teamProvider.ts         — TeamProvider interface
+      teamUtils.ts            — Inline-teammate helpers
+      providers/
+        index.ts              — Re-exports claudeProvider + copyHookScript
+        hook/claude/
+          claude.ts           — claudeProvider impl, formatToolStatus, normalizeHookEvent
+          installer.ts        — Install/uninstall hooks in ~/.claude/settings.json (was claudeHookInstaller.ts)
+          claudeTeamProvider.ts — Claude-specific TeamProvider
+          constants.ts        — Claude hook event names + bundle filename
+          hooks/
+            claudeHookSrc.ts  — Bundled hook script source (was claude-hook.ts). Reads stdin, discovers target via env→daemon.json→server.json, POSTs JSON
+  __tests__/hooks/            — Vitest suite (was server/__tests__/)
+    httpServer.test.ts        — HTTP server lifecycle, auth, hooks, server.json
+    eventHandler.test.ts      — Event routing, buffering, timer cancellation
+    installer.test.ts         — Hook install/uninstall in settings.json
+    claudeHookSrc.test.ts     — Integration: spawns real bundled hook script; verifies discovery chain
+    claude.test.ts            — claudeProvider unit tests
+    claudeTeamProvider.test.ts — Claude team provider tests
+    teamUtils.test.ts         — Inline-teammate helper tests
 
 webview-ui/src/               — React + TypeScript (Vite)
   constants.ts                — All webview magic numbers/strings (grid, animation, rendering, camera, zoom, editor, game logic, notification sound)
@@ -106,7 +131,13 @@ JSONL transcripts at `~/.claude/projects/<project-hash>/<session-id>.jsonl`. Pro
 
 **Dual-mode session detection**: Hooks mode (preferred) uses Claude Code Hooks API for instant, reliable detection. Heuristic mode (fallback) uses filesystem polling when hooks are unavailable. The `hookDelivered` flag per agent and `hooksEnabledRef` globally control the switch.
 
-**Hooks mode** (11 events): `SessionStart` (session begin/resume/clear), `SessionEnd` (exit/clear), `Stop` (turn complete), `PermissionRequest`, `Notification` (idle/permission prompt), `UserPromptSubmit` (instant agent spawn confirmation), `PreToolUse` (instant active state), `PostToolUse`, `PostToolUseFailure`, `SubagentStart`, `SubagentStop`. HTTP server (`server/src/server.ts`) receives events via `~/.pixel-agents/hooks/claude-hook.js`. Server discovery via `~/.pixel-agents/server.json` (port + PID + auth token). Multi-window safe. When hooks are active, heuristic scanners (main 1s, external 3s, stale 30s) are skipped entirely.
+**Hooks mode** (11 events): `SessionStart` (session begin/resume/clear), `SessionEnd` (exit/clear), `Stop` (turn complete), `PermissionRequest`, `Notification` (idle/permission prompt), `UserPromptSubmit` (instant agent spawn confirmation), `PreToolUse` (instant active state), `PostToolUse`, `PostToolUseFailure`, `SubagentStart`, `SubagentStop`. HTTP server (`daemon/src/hooks/httpServer.ts`) receives events via `~/.pixel-agents/hooks/claude-hook.js`. Server discovery via `~/.pixel-agents/server.json` (port + PID + auth token). Multi-window safe. When hooks are active, heuristic scanners (main 1s, external 3s, stale 30s) are skipped entirely.
+
+**Hook script discovery chain** (`daemon/src/hooks/providers/hook/claude/hooks/claudeHookSrc.ts`):
+
+1. `PIXEL_AGENTS_HOOK_URL` env var (optional `PIXEL_AGENTS_HOOK_TOKEN` for Bearer auth) — highest priority, for testing/dev
+2. `~/.pixel-agents/daemon.json` if `hookPort` field is set (TUI port daemon owns hook server in future phases)
+3. `~/.pixel-agents/server.json` (legacy: VS Code extension's PixelAgentsServer)
 
 **Heuristic mode** (fallback): Per-agent 500ms JSONL polling for /clear detection, 1s main scanner for terminal adoption, 3s external scanner, 30s stale check. Content-based /clear detection (`/clear</command-name>` in first 8KB). Multiple dismissal systems (clearDismissedFiles, dismissedJsonlFiles, seededMtimes, pendingClearFiles).
 
@@ -198,15 +229,17 @@ Toggle via "Layout" button. Tools: SELECT (default), Floor paint, Wall paint, Er
 ## Build & Dev
 
 ```sh
-npm install && cd webview-ui && npm install && cd ../server && npm install && cd .. && npm run build
+npm install && cd webview-ui && npm install && cd ../daemon && npm install && cd .. && npm run build
 ```
 
-Build: type-check → lint → esbuild (extension) → vite (webview). F5 for Extension Dev Host.
+Build: type-check → lint → esbuild (extension + hook bundle) → vite (webview). F5 for Extension Dev Host.
+
+Daemon build (TUI port Phase 1): `cd daemon && npm run build` produces `daemon/dist/server.js`. Run with `node daemon/dist/server.js --foreground`.
 
 Testing:
 
-- `npm test` -- all unit/integration tests (webview + server)
-- `npm run test:server` -- server tests (Vitest)
+- `npm test` -- all unit/integration tests (webview + daemon)
+- `npm run test:daemon` -- daemon tests (Vitest)
 - `npm run test:webview` -- webview asset integration tests (Node test runner)
 - `npm run e2e` -- Playwright E2E tests (real VS Code instance)
 
@@ -244,6 +277,7 @@ All magic numbers and strings are centralized — never add inline constants to 
 - `WebviewViewProvider` (not `WebviewPanel`) — lives in panel area alongside terminal
 - Inline esbuild problem matcher (no extra extension needed)
 - Webview is separate Vite project with own `node_modules`/`tsconfig`
-- Hook script (`claude-hook.ts`) bundled to standalone CJS via esbuild (`buildHooks()` in esbuild.js), output: `dist/hooks/claude-hook.js`
-- Constants centralized in `server/src/constants.ts` (shared), `src/constants.ts` imports from there. Extension-only constants stay in `src/constants.ts`
+- Hook script (`daemon/src/hooks/providers/hook/claude/hooks/claudeHookSrc.ts`) bundled to standalone CJS via esbuild (`buildHooks()` in esbuild.js); output filename pinned to `dist/hooks/claude-hook.js` (Claude Code references the exact path)
+- Constants centralized in `daemon/src/hooks/constants.ts` (shared), `src/constants.ts` imports from there. Extension-only constants stay in `src/constants.ts`
+- `daemon/src/hooks/` is a CJS subtree (`package.json: {"type": "commonjs"}`) inside the otherwise-ESM daemon — lets the VS Code extension (CJS) import hooks directly without ESM/CJS interop errors. Daemon's own ESM code uses standard ESM→CJS interop when it eventually imports from hooks/
 - Server always starts regardless of hooks toggle (foundation for future WS transport). Only hook installation is gated by the setting
