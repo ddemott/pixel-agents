@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import type { Socket } from 'net';
 
+import type { ConnectionScope, DispatchContext, MethodRegistry } from './dispatch.js';
 import { encodeNdjson, type Frame, FrameDecoder, FramingError } from './framing.js';
 import {
   type Hello,
@@ -9,7 +10,6 @@ import {
   isReq,
   PROTO_VERSION,
   type Res,
-  type WireError,
   type WorldSnapshot,
 } from './wire.js';
 
@@ -20,34 +20,45 @@ export interface ConnectionContext {
   expectedToken: string;
   bootId: string;
   daemonVersion: string;
-  /** Build an initial WorldSnapshot at handshake time. Stub until Day 5+. */
+  /** Build an initial WorldSnapshot at handshake time. */
   buildWorldSnapshot: () => WorldSnapshot;
   /** Build a fresh per-connection sessionId. */
   newSessionId?: () => string;
-  /** Notified after a successful hello so the caller can register the socket
-   *  with the broadcast bus, etc. (Day 5+). */
-  onAuthenticated?: (sock: Socket) => void;
+  /**
+   * Method registry shared by every connection. Day 7-8 introduces this; Day
+   * 3-4 connections returned `method_not_implemented` for every request.
+   */
+  registry: MethodRegistry;
+  /** Daemon-wide handles passed to every handler. */
+  dispatchContext: DispatchContext;
+  /**
+   * Notified after a successful hello so the caller can register the per-conn
+   * scope with the broadcast bus (Day 5+).
+   */
+  onAuthenticated?: (sock: Socket, scope: ConnectionScope) => void;
 }
 
 interface ConnectionState {
   authed: boolean;
-  sessionId: string;
+  scope: ConnectionScope;
 }
 
 /**
  * Wire a freshly-accepted socket into the RPC pipeline.
  *
  * First NDJSON message must be `hello` with a valid token; otherwise we close.
- * Binary frames (0x01/0x02/0x03) before auth are also a close-the-socket condition.
- *
- * Day 3-4 scope: framing + auth + helloAck only. Method dispatch is a placeholder
- * that replies `error: { code: "method_not_implemented" }` — Day 7-8 fills it out.
+ * Binary frames (0x01/0x02/0x03) before auth are also a close-the-socket
+ * condition.
  */
 export function attachConnection(sock: Socket, ctx: ConnectionContext): void {
   const decoder = new FrameDecoder();
   const state: ConnectionState = {
     authed: false,
-    sessionId: (ctx.newSessionId ?? defaultSessionId)(),
+    scope: {
+      sessionId: (ctx.newSessionId ?? defaultSessionId)(),
+      subscriptions: new Set<string>(),
+      sock,
+    },
   };
 
   const helloTimer = setTimeout(() => {
@@ -66,7 +77,7 @@ export function attachConnection(sock: Socket, ctx: ConnectionContext): void {
       return;
     }
     for (const frame of decoder.drain()) {
-      handleFrame(sock, state, ctx, frame, helloTimer);
+      void handleFrame(sock, state, ctx, frame, helloTimer);
       if (sock.destroyed) return;
     }
   });
@@ -80,13 +91,13 @@ export function attachConnection(sock: Socket, ctx: ConnectionContext): void {
   });
 }
 
-function handleFrame(
+async function handleFrame(
   sock: Socket,
   state: ConnectionState,
   ctx: ConnectionContext,
   frame: Frame,
   helloTimer: NodeJS.Timeout,
-): void {
+): Promise<void> {
   // Binary frames before authentication are forbidden.
   if (!state.authed && frame.kind !== 'ndjson') {
     closeWithError(sock, 'unauthenticated', `binary frame ${frame.kind} before hello`);
@@ -94,8 +105,8 @@ function handleFrame(
   }
 
   if (frame.kind !== 'ndjson') {
-    // Day 3-4: post-auth binary frames are valid wire format but no consumer
-    // is wired yet. PTY in/out and asset blobs land in Day 13-14 / Day 7-8.
+    // Post-auth binary frames are valid wire format but no consumer is wired
+    // yet — PTY in/out and asset blobs land in later phases.
     return;
   }
 
@@ -117,15 +128,19 @@ function handleFrame(
   }
 
   if (isReq(parsed)) {
-    const err: WireError = {
-      code: 'method_not_implemented',
-      message: `method '${parsed.method}' lands in Phase 1 Day 7-8`,
-    };
-    sendRes(sock, { kind: 'res', reqId: parsed.reqId, ok: false, error: err });
+    const res = await ctx.registry.dispatch(
+      parsed.reqId,
+      parsed.method,
+      parsed.params,
+      state.scope,
+      ctx.dispatchContext,
+    );
+    sendRes(sock, res);
     return;
   }
 
-  // Unknown / out-of-spec message: ignore in Day 3-4. Later phases may upgrade to close.
+  // Unknown / out-of-spec message: ignore for now. Later phases may upgrade
+  // to a close-the-socket condition.
 }
 
 function handleHello(
@@ -156,15 +171,16 @@ function handleHello(
     daemonVersion: ctx.daemonVersion,
     protoVersion: PROTO_VERSION,
     bootId: ctx.bootId,
-    sessionId: state.sessionId,
+    sessionId: state.scope.sessionId,
     subscriptions: [],
     world: ctx.buildWorldSnapshot(),
   };
   sock.write(encodeNdjson(ack));
-  ctx.onAuthenticated?.(sock);
+  ctx.onAuthenticated?.(sock, state.scope);
 }
 
 function sendRes(sock: Socket, res: Res): void {
+  if (sock.destroyed || !sock.writable) return;
   try {
     sock.write(encodeNdjson(res));
   } catch {

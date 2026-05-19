@@ -4,6 +4,16 @@ import type { AgentEvent, AgentEventSink } from '../../../src/messageSender.js';
 import { encodeNdjson, FramingError } from '../rpc/framing.js';
 import type { Evt } from '../rpc/wire.js';
 
+interface Subscriber {
+  sock: Socket;
+  /**
+   * Topic filter shared with the connection scope by reference. An empty set
+   * means "no filter" (deliver all topics); a non-empty set restricts to its
+   * entries. `"*"` is also honoured as the explicit all-topics wildcard.
+   */
+  subscriptions: Set<string>;
+}
+
 /**
  * AgentEventSink implementation that fans out events to every authed RPC client.
  *
@@ -12,18 +22,24 @@ import type { Evt } from '../rpc/wire.js';
  * timestamp. The full original event object is shipped as `data`, so clients
  * can reuse the same payloads the extension's webview consumes.
  *
- * Day 5 scope: fan-out only. Per-agent scope (`emitTo(agentId, ...)`) and
- * backpressure on slow consumers land in Day 9-10.
+ * Day 7-8 adds per-connection topic filtering driven by the `subscribe` RPC.
+ * Per-agent scope (`emitTo(agentId, ...)`) and backpressure on slow consumers
+ * land in Day 9-10.
  */
 export class BroadcastSink implements AgentEventSink {
-  private readonly conns = new Map<number, Socket>();
+  private readonly conns = new Map<number, Subscriber>();
   private nextConnId = 1;
   private readonly seqByTopic = new Map<string, number>();
 
-  /** Register a freshly-authed socket. Returns its connection id (for unregister). */
-  register(sock: Socket): number {
+  /**
+   * Register a freshly-authed socket. Pass the connection's subscription set
+   * by reference so future `subscribe` RPCs update the filter in place.
+   * The pre-Day-7 single-argument call site (no scope) is still supported and
+   * gets an unfiltered subscription (empty Set = deliver all).
+   */
+  register(sock: Socket, subscriptions: Set<string> = new Set()): number {
     const id = this.nextConnId++;
-    this.conns.set(id, sock);
+    this.conns.set(id, { sock, subscriptions });
     const cleanup = (): void => {
       this.conns.delete(id);
     };
@@ -66,9 +82,16 @@ export class BroadcastSink implements AgentEventSink {
       throw e;
     }
 
-    for (const sock of this.conns.values()) {
-      if (sock.destroyed || !sock.writable) continue;
-      sock.write(frame);
+    for (const sub of this.conns.values()) {
+      if (sub.sock.destroyed || !sub.sock.writable) continue;
+      if (!matchesFilter(sub.subscriptions, topic)) continue;
+      sub.sock.write(frame);
     }
   }
+}
+
+function matchesFilter(subs: Set<string>, topic: string): boolean {
+  if (subs.size === 0) return true; // unfiltered default
+  if (subs.has('*')) return true;
+  return subs.has(topic);
 }

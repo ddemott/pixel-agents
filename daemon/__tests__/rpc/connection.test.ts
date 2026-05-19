@@ -5,6 +5,7 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { attachConnection, type ConnectionContext } from '../../src/rpc/connection.js';
+import { type DispatchContext, MethodRegistry } from '../../src/rpc/dispatch.js';
 import { encodeNdjson, encodePtyOut, type Frame, FrameDecoder } from '../../src/rpc/framing.js';
 import { type ClientCapabilities, type Hello, PROTO_VERSION } from '../../src/rpc/wire.js';
 
@@ -23,6 +24,18 @@ const CAPS: ClientCapabilities = {
   mouse: true,
 };
 
+function emptyDispatchContext(): DispatchContext {
+  // Minimal stub for tests that only check framing/auth — handlers are unreachable.
+  return {
+    ours: { processId: 1, bootId: 'test-boot' },
+    sink: { post: () => {}, register: () => 0, unregister: () => {}, size: () => 0 } as never,
+    agents: { forCwd: () => [] } as never,
+    layoutDebouncer: { schedule: () => {}, flushNow: () => {}, dispose: () => {} } as never,
+    state: { layout: null, config: { externalAssetDirectories: [] } },
+    triggerShutdown: () => {},
+  };
+}
+
 function makeContext(overrides: Partial<ConnectionContext> = {}): ConnectionContext {
   return {
     expectedToken: VALID_TOKEN,
@@ -35,6 +48,8 @@ function makeContext(overrides: Partial<ConnectionContext> = {}): ConnectionCont
       assets: { catalog: [], characters: [], floors: [], walls: [] },
       agents: [],
     }),
+    registry: new MethodRegistry(),
+    dispatchContext: emptyDispatchContext(),
     ...overrides,
   };
 }
@@ -198,7 +213,7 @@ describe('connection: handshake', () => {
     expect(closed).toBe(true);
   });
 
-  it('replies method_not_implemented for unknown method after handshake', async () => {
+  it('replies unknown_method for an unregistered method after handshake', async () => {
     await startServer(makeContext());
     const sock = await connect();
     const hello: Hello = {
@@ -227,7 +242,7 @@ describe('connection: handshake', () => {
         error: { code: string };
       };
       expect(obj.ok).toBe(false);
-      expect(obj.error.code).toBe('method_not_implemented');
+      expect(obj.error.code).toBe('unknown_method');
     }
     sock.destroy();
   });

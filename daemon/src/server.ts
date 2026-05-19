@@ -17,10 +17,12 @@ import {
   readDiscovery,
   writeDiscovery,
 } from './discovery.js';
-import { readLayout, watchLayout } from './layout/persistence.js';
+import { LayoutSaveDebouncer, readLayout, watchLayout } from './layout/persistence.js';
 import { DAEMON_SOCKET_PATH, DAEMON_STATE_PATH } from './paths.js';
 import type { WriterTag } from './persistence/writerTag.js';
 import { attachConnection } from './rpc/connection.js';
+import type { DispatchContext } from './rpc/dispatch.js';
+import { buildMethodRegistry } from './rpc/methods/index.js';
 import type { WorldSnapshot } from './rpc/wire.js';
 
 const DAEMON_VERSION = '0.0.1';
@@ -139,22 +141,40 @@ async function main(): Promise<void> {
   void stateStore;
   void agents;
 
-  let layout = readLayout();
+  const sharedState: DispatchContext['state'] = {
+    layout: readLayout(),
+    config: readConfig(),
+  };
+
   const layoutWatcher = watchLayout(ours, (next) => {
-    layout = next;
-    sink.post({ type: 'layout.changed', source: 'file', layout });
+    sharedState.layout = next;
+    sink.post({ type: 'layout.changed', source: 'file', layout: next });
   });
 
-  let liveConfig = readConfig();
   const configWatcher = watchConfig(ours, (next) => {
-    liveConfig = next;
-    sink.post({ type: 'settings.updated', settings: liveConfig });
+    sharedState.config = next;
+    sink.post({ type: 'settings.updated', settings: next });
   });
+
+  const layoutDebouncer = new LayoutSaveDebouncer(ours);
+  const registry = buildMethodRegistry();
+
+  // Forward-declared so `daemon.shutdown` (registered before this assignment
+  // resolves) can call into the shutdown handler defined below.
+  let shutdown: (signal: string) => void = () => {};
+  const dispatchContext: DispatchContext = {
+    ours,
+    sink,
+    agents,
+    layoutDebouncer,
+    state: sharedState,
+    triggerShutdown: () => shutdown('rpc'),
+  };
 
   const buildWorldSnapshot = (): WorldSnapshot => ({
     schemaVersion: 1,
     worldSeed: 0,
-    layout,
+    layout: sharedState.layout,
     assets: { catalog: [], characters: [], floors: [], walls: [] },
     agents: [],
   });
@@ -165,8 +185,10 @@ async function main(): Promise<void> {
       bootId: discovery.bootId,
       daemonVersion: DAEMON_VERSION,
       buildWorldSnapshot,
-      onAuthenticated: (authed) => {
-        sink.register(authed);
+      registry,
+      dispatchContext,
+      onAuthenticated: (authed, scope) => {
+        sink.register(authed, scope.subscriptions);
       },
     });
   });
@@ -176,10 +198,11 @@ async function main(): Promise<void> {
   );
 
   let shuttingDown = false;
-  const shutdown = (signal: string) => {
+  shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[Daemon] Received ${signal}, shutting down.`);
+    layoutDebouncer.flushNow();
     layoutWatcher.dispose();
     configWatcher.dispose();
     server.close(() => {

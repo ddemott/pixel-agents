@@ -34,7 +34,15 @@ daemon/                       — Standalone daemon (TUI port Phase 1; ESM, Node
     rpc/
       framing.ts              — Channel-mux encoder/decoder (arch §10): 0x00 NDJSON (256 KB cap), 0x01/0x03 PTY (1 MB cap), 0x02 asset blob (chunked, high-bit-of-tier EOF). FrameDecoder is streaming.
       wire.ts                 — NDJSON envelope types (Req/Res/Evt/Hello/HelloAck), ClientCapabilities, stub WorldSnapshot. protoVersion = 1.
-      connection.ts           — Per-socket handler: enforce hello-first, timing-safe token compare, send helloAck with inline WorldSnapshot, dispatch placeholder for unknown methods (real catalog lands Day 7-8). `onAuthenticated(sock)` callback for sink registration.
+      connection.ts           — Per-socket handler: enforce hello-first, timing-safe token compare, send helloAck with inline WorldSnapshot, route post-handshake `Req`s through the MethodRegistry. `onAuthenticated(sock, scope)` callback registers the per-conn `ConnectionScope.subscriptions` Set with the BroadcastSink so future `subscribe` RPCs update the filter in place.
+      dispatch.ts             — `MethodRegistry` (method → handler map, duplicate-registration guard), `ConnectionScope` (per-conn `sessionId` / `subscriptions` / `sock`), `DispatchContext` (writer tag, sink, agents registry, layout debouncer, mutable layout/config refs, triggerShutdown), `ok` / `err` helpers.
+      methods/
+        index.ts              — `buildMethodRegistry()` wires every domain's `register*Methods` once at boot.
+        layout.ts             — `layout.get/save/import/export`; `save` schedules via `LayoutSaveDebouncer` and broadcasts `layout.changed`. `setDefault` registered as `not_yet_supported`.
+        settings.ts           — `settings.get/set`; defensive per-field patch, broadcasts `settings.updated`.
+        subscribe.ts          — Writes the topic filter into `ConnectionScope.subscriptions`. Empty set or `"*"` = unfiltered; non-empty restricts.
+        control.ts            — `daemon.shutdown`: replies `ok` then defers the actual shutdown via `setImmediate`.
+        agents.ts             — `agent.list` from `AgentsRegistry`; everything else (`agent.spawn/close/focus/reassignSeat/adopt`, `pty.*`, `assets.*`, `hooks.toggle`) registers as `not_yet_supported` with descriptive messages so clients get enumerable failure codes.
     agents/
       broadcastSink.ts        — AgentEventSink impl. Fans `post(event)` out to every registered RPC socket as `{kind:'evt', topic, seq, ts, data}` with per-topic monotonic seq. Skips destroyed/unwritable sockets; auto-unregisters on `close`.
       daemonRuntime.ts        — AgentRuntime impl. Single workspace folder = daemon's boot cwd. Multi-folder support arrives once `agent.spawn { cwd }` lands (Day 7-8).
@@ -64,7 +72,7 @@ daemon/                       — Standalone daemon (TUI port Phase 1; ESM, Node
           constants.ts        — Claude hook event names + bundle filename
           hooks/
             claudeHookSrc.ts  — Bundled hook script source (was claude-hook.ts). Reads stdin, discovers target via env→daemon.json→server.json, POSTs JSON
-  __tests__/rpc/              — Vitest: framing roundtrip + fuzz; connection handshake/auth/proto-mismatch
+  __tests__/rpc/              — Vitest: framing roundtrip + fuzz; connection handshake/auth/proto-mismatch; method dispatch (layout, settings, subscribe, shutdown, agent.list, gated stubs, broadcast filter)
   __tests__/agents/           — Vitest: BroadcastSink fan-out + per-topic seq; FileStateStore atomic write + malformed-file recovery
   __tests__/persistence/      — Vitest: writer-tag own/external matching, fs.watch + polling fallback, LayoutSaveDebouncer coalesce, AgentsRegistry per-cwd roundtrip + schema-version guards
   __tests__/hooks/            — Vitest suite (was server/__tests__/)
