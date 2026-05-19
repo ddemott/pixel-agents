@@ -14,7 +14,7 @@ vi.mock('os', async () => {
 });
 
 // Must import AFTER mock setup
-const { PixelAgentsServer } = await import('../src/server.js');
+const { PixelAgentsServer } = await import('../../src/hooks/httpServer.js');
 
 async function postHook(
   port: number,

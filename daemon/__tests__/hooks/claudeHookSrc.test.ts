@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-const HOOK_SCRIPT = path.join(__dirname, '../../dist/hooks/claude-hook.js');
+const HOOK_SCRIPT = path.join(__dirname, '../../../dist/hooks/claude-hook.js');
 
 // Isolated temp HOME
 let tmpBase: string;

@@ -1,9 +1,9 @@
 // TODO(Standalone version): Move timerManager and types to server/src/ to eliminate cross-boundary imports
 import * as path from 'path';
 
-import type { AgentEventSink } from '../../src/messageSender.js';
-import { cancelPermissionTimer, cancelWaitingTimer } from '../../src/timerManager.js';
-import type { AgentState } from '../../src/types.js';
+import type { AgentEventSink } from '../../../src/messageSender.js';
+import { cancelPermissionTimer, cancelWaitingTimer } from '../../../src/timerManager.js';
+import type { AgentState } from '../../../src/types.js';
 import { HOOK_EVENT_BUFFER_MS, SESSION_END_GRACE_MS } from './constants.js';
 import type { AgentEvent, HookProvider } from './provider.js';
 import { getInlineTeammates, hasInlineTeammates } from './teamUtils.js';

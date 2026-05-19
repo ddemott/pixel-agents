@@ -7,8 +7,8 @@ import {
   TASK_DESCRIPTION_DISPLAY_MAX_LENGTH,
   TEXT_IDLE_DELAY_MS,
   TOOL_DONE_DELAY_MS,
-} from '../server/src/constants.js';
-import type { HookProvider } from '../server/src/provider.js';
+} from '../daemon/src/hooks/constants.js';
+import type { HookProvider } from '../daemon/src/hooks/provider.js';
 import type { AgentEventSink } from './messageSender.js';
 import {
   cancelPermissionTimer,

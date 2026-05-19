@@ -3,14 +3,14 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-import type { HookEvent } from '../server/src/hookEventHandler.js';
-import { HookEventHandler } from '../server/src/hookEventHandler.js';
+import type { HookEvent } from '../daemon/src/hooks/eventHandler.js';
+import { HookEventHandler } from '../daemon/src/hooks/eventHandler.js';
+import { PixelAgentsServer } from '../daemon/src/hooks/httpServer.js';
 import {
   installHooks,
   uninstallHooks,
-} from '../server/src/providers/hook/claude/claudeHookInstaller.js';
-import { claudeProvider, copyHookScript } from '../server/src/providers/index.js';
-import { PixelAgentsServer } from '../server/src/server.js';
+} from '../daemon/src/hooks/providers/hook/claude/installer.js';
+import { claudeProvider, copyHookScript } from '../daemon/src/hooks/providers/index.js';
 import {
   getProjectDirPath,
   launchNewTerminal,

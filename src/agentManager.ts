@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { JSONL_POLL_INTERVAL_MS } from '../server/src/constants.js';
+import { JSONL_POLL_INTERVAL_MS } from '../daemon/src/hooks/constants.js';
 import { type AgentStateStore, getAgentRuntime } from './agentRuntime.js';
 import {
   TERMINAL_NAME_PREFIX,

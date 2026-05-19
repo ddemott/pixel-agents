@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { claudeProvider } from '../src/providers/hook/claude/claude.js';
+import { claudeProvider } from '../../src/hooks/providers/hook/claude/claude.js';
 
 describe('claudeProvider', () => {
   describe('identity', () => {

@@ -34,8 +34,8 @@ import {
   GLOBAL_SCAN_ACTIVE_MAX_AGE_MS,
   GLOBAL_SCAN_ACTIVE_MIN_SIZE,
   PROJECT_SCAN_INTERVAL_MS,
-} from '../server/src/constants.js';
-import type { TeamProvider } from '../server/src/teamProvider.js';
+} from '../daemon/src/hooks/constants.js';
+import type { TeamProvider } from '../daemon/src/hooks/teamProvider.js';
 import { removeAgent } from './agentManager.js';
 import { TERMINAL_NAME_PREFIX } from './constants.js';
 import type { AgentEventSink } from './messageSender.js';

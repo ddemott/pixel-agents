@@ -1,4 +1,4 @@
-import { PERMISSION_TIMER_DELAY_MS } from '../server/src/constants.js';
+import { PERMISSION_TIMER_DELAY_MS } from '../daemon/src/hooks/constants.js';
 import type { AgentEventSink } from './messageSender.js';
 import type { AgentState } from './types.js';
 

@@ -7,12 +7,12 @@ import {
   TASK_DESCRIPTION_DISPLAY_MAX_LENGTH,
 } from '../../../constants.js';
 import type { AgentEvent, HookProvider } from '../../../provider.js';
+import { claudeTeamProvider } from './claudeTeamProvider.js';
 import {
   areHooksInstalled as installerAreHooksInstalled,
   installHooks as installerInstallHooks,
   uninstallHooks as installerUninstallHooks,
-} from './claudeHookInstaller.js';
-import { claudeTeamProvider } from './claudeTeamProvider.js';
+} from './installer.js';
 
 // ── formatToolStatus: moved from src/transcriptParser.ts ──
 

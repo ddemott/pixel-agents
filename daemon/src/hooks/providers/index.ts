@@ -2,7 +2,7 @@
  * Provider registry: re-exports all bundled providers.
  *
  * Adding a new CLI provider:
- *   1. Create `server/src/providers/hook/<cli>/<cli>.ts` implementing HookProvider.
+ *   1. Create `daemon/src/hooks/providers/hook/<cli>/<cli>.ts` implementing HookProvider.
  *      (File-based and stream-based provider types will land when the first such
  *       provider ships.)
  *   2. Add an export line below.
@@ -12,4 +12,4 @@
  */
 
 export { claudeProvider } from './hook/claude/claude.js';
-export { copyHookScript } from './hook/claude/claudeHookInstaller.js';
+export { copyHookScript } from './hook/claude/installer.js';

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AgentState } from '../../src/types.js';
-import { HookEventHandler } from '../src/hookEventHandler.js';
-import { claudeProvider } from '../src/providers/hook/claude/claude.js';
+import type { AgentState } from '../../../src/types.js';
+import { HookEventHandler } from '../../src/hooks/eventHandler.js';
+import { claudeProvider } from '../../src/hooks/providers/hook/claude/claude.js';
 
 /** Minimal AgentState for testing. */
 function createTestAgent(overrides: Partial<AgentState> = {}): AgentState {
