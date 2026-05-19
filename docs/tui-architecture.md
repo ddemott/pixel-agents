@@ -1849,21 +1849,7 @@ Known broken terminals (avoid T1 claims): VS Code integrated terminal pre-1.92, 
 
 ---
 
-## 21. Minor-Issue Resolutions (compact)
-
-- **MIN-1**: OQ-2 (Kitty placeholders in WezTerm) is **blocking, not open** — handled by the T1-K/T1-O split (§7, MAJ-4 + NEW-MAJ-2) with a runtime probe. Kitty and Ghostty 1.3+ land in T1-K; WezTerm lands in T1-O.
-- **MIN-2**: tmux passthrough probe nesting — see §15. Each nested tmux layer needs its own `allow-passthrough`; we probe by counting `\ePtmux;` prefixes and warn on multi-level nesting without all layers configured.
-- **MIN-3**: Hook auth token rotation policy specified at §15. Generated at install; rotated only via explicit `--rotate-token`; in-flight events have a ≤500 ms re-auth window.
-- **MIN-4**: Schema versioning on `world.snapshot` — `schemaVersion: 1` field (§10). Bumped on breaking changes; daemon and client both refuse mismatched majors via `protoVersion` in `hello`.
-- **MIN-5**: Logging format/path — `~/.pixel-agents/logs/daemon-YYYY-MM-DD.log`, NDJSON, rotated daily (§16).
-- **MIN-6**: Tab focus toggle conflicts with claude tab-complete — `Tab` sends literal Tab to PTY when in PtyAgent mode; client-side pane-switch is rebound to `Ctrl+Alt+O` (§6).
-- **MIN-7**: Keymap customization — `~/.pixel-agents/keymap.toml` lets users rebind any client-reserved chord (§6).
-- **MIN-8**: Citation hygiene — `dasroot.net` removed from the canonical sources list; replaced by primary sources (Ratatui repo, wezterm-term README, kitty graphics protocol spec, libghostty announcement).
-- **MIN-9**: Naming collision — see §17. `pixel-agents` is the user-facing command; `pixel-agents-tui` is the Rust client binary; `pixel-agents-daemon` is only the subcommand.
-
----
-
-## 22. Parity Checklist Status (revised)
+## 21. Parity Checklist Status (revised)
 
 Each item: status + section that addresses it.
 
@@ -1979,7 +1965,7 @@ Each item: status + section that addresses it.
 
 ---
 
-## 23. Open Questions
+## 22. Open Questions
 
 (Pared down from v1; addressed items deleted.)
 
@@ -1989,34 +1975,6 @@ Each item: status + section that addresses it.
 4. **Color management for HSBC across tiers**: Colorize mode produces colors not in xterm-256. In T5/T6 quantization is destructive. We store the full HSBC and quantize at draw (fidelity over memory).
 
 (MIN-1 / OQ-2 promoted to blocking and addressed in §7 + MAJ-4. Migration UX, audio cross-platform, hot-reload-during-edit, future protocol versioning are all resolved in §16 / §15 / §16 / §10 respectively.)
-
----
-
-## 24. Files Touched / Relevant Paths
-
-Implementation-relevant absolute paths:
-
-- `/home/dale/pixel-agents/server/src/server.ts`
-- `/home/dale/pixel-agents/server/src/hookEventHandler.ts`
-- `/home/dale/pixel-agents/src/transcriptParser.ts`
-- `/home/dale/pixel-agents/src/fileWatcher.ts`
-- `/home/dale/pixel-agents/src/agentManager.ts`
-- `/home/dale/pixel-agents/src/timerManager.ts`
-- `/home/dale/pixel-agents/src/layoutPersistence.ts`
-- `/home/dale/pixel-agents/src/configPersistence.ts`
-- `/home/dale/pixel-agents/src/assetLoader.ts`
-- `/home/dale/pixel-agents/webview-ui/src/office/engine/officeState.ts`
-- `/home/dale/pixel-agents/webview-ui/src/office/engine/characters.ts`
-- `/home/dale/pixel-agents/webview-ui/src/office/engine/gameLoop.ts`
-- `/home/dale/pixel-agents/webview-ui/src/office/engine/renderer.ts`
-- `/home/dale/pixel-agents/webview-ui/src/office/engine/matrixEffect.ts`
-- `/home/dale/pixel-agents/webview-ui/src/office/layout/tileMap.ts`
-- `/home/dale/pixel-agents/webview-ui/src/office/colorize.ts`
-- `/home/dale/pixel-agents/docs/tui-parity-checklist.md`
-- `/home/dale/pixel-agents/docs/critique-r1.md`
-- `/home/dale/pixel-agents/docs/critique-r2.md`
-- `/home/dale/pixel-agents/docs/changes-r1-to-r2.md`
-- `/home/dale/pixel-agents/docs/changes-r2-to-r3.md`
 
 ---
 
@@ -2045,11 +2003,3 @@ Primary sources only (Addresses MIN-8):
 - [Scheduled Task XML schema — Microsoft Docs](https://learn.microsoft.com/en-us/windows/win32/taskschd/task-scheduler-schema)
 
 ---
-
-### Word count
-
-This document is approximately **13,800 words** (excluding code blocks) after the v2→v3 surgical edits, within the 10,000–14,000-word target.
-
-### Items couldn't be fully resolved
-
-None. All five Critical, all twelve Major, and all nine Minor critique items from R1, plus NEW-CRIT-1, NEW-MAJ-1..6, and NEW-MIN-1..7 from R2 are addressed. Three Full parity items remain ⚠ with explicit accepted limitations (F6 half-block tiers, N3 animated GIF support, N6 FS Pixel Sans) — both N3 and N6 now have body discussion in §6. One performance target (R3) has been revised from <100 MB to <200 MB with documented rationale (image-tier sprite caches make <100 MB infeasible while preserving fidelity). Every MVP item is ✓.

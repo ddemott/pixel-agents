@@ -1,4 +1,4 @@
-// TODO(Standalone version): Move timerManager and types to server/src/ to eliminate cross-boundary imports
+// TODO(Standalone version): Move timerManager and types into daemon/src/ to eliminate cross-package imports back into src/
 import * as path from 'path';
 
 import type { AgentEventSink } from '../../../src/messageSender.js';

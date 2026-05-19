@@ -1,40 +1,66 @@
-# TODO Index
+# TODO
 
-This repo doesn't keep todos in one place — they live in the document that's authoritative for each kind of work. Use this index as the entry point.
+Active items by priority. For background and big-picture plans, see the linked docs at the bottom.
 
-## Active work
+## Now — Phase 1 Day 3-4
 
-- **TUI port build plan** — `docs/tui-implementation-plan.md`
-  Phased work for porting Pixel Agents to a standalone TUI. The Progress block at the top tracks which phases/days have shipped. Authoritative for "what to build next."
-  - Phase 0 ✅ — MessageSender refactor
-  - Phase 1 Day 1 ✅ — daemon scaffold
-  - Phase 1 Day 2 ✅ — port `server/` → `daemon/src/hooks/`
-  - Phase 1 Day 3-4 ⏭️ — RPC framing (NDJSON + binary mux on UDS)
-  - Phase 1 Days 5-16, Phases 2-8 — not started
+- [ ] **RPC framing on the UDS socket.** Channel multiplex over the existing daemon socket:
+      `0x00` NDJSON control · `0x01` PTY out · `0x02` asset blob · `0x03` PTY in (>64 KB).
+      NDJSON line cap 256 KB; binary frame cap 1 MB. Auth via Bearer token from `daemon.json`.
+      Spec lives in `docs/tui-architecture.md` §10 + `docs/tui-implementation-plan.md` Phase 1 Day 3-4.
 
-- **TUI parity checklist** — `docs/tui-parity-checklist.md`
-  ~100 feature parity items (MVP vs Full) as Markdown checkboxes. Source of truth for "is the TUI feature-complete?" Items get ticked as features ship.
+## Next — Phase 1 Day 5-16
 
-## Design open questions
+- [ ] **Day 5** — bring Phase-0 modules into the daemon. No new source files: the daemon
+      imports `src/transcriptParser.ts` etc. across packages, backed by daemon-side impls of
+      `AgentEventSink`, `TerminalRegistry`, `AgentRuntime`, `AgentStateStore`.
+- [ ] **Day 6** — persistence ports (layout, config, `agents.json`) with `_writer` writer tag.
+- [ ] **Day 7-8** — RPC command catalog (`hello`, `helloAck` w/ inline `WorldSnapshot`,
+      `agent.*`, `layout.*`, `subscribe`).
+- [ ] **Day 9-10** — daemon-side `AgentEventSink` bus (broadcast over UDS, backpressure).
+- [ ] **Day 11** — NDJSON logging to `~/.pixel-agents/logs/`.
+- [ ] **Day 12** — hook integration test (real `claude` → hook script → daemon → mock client).
+- [ ] **Day 13-14** — agent spawn + JSONL polling end-to-end.
+- [ ] **Day 15-16** — `claude --resume` revival on daemon restart.
 
-- `docs/tui-architecture.md` § "Open Questions"
-  Architectural punts the design loop deliberately left for later.
+## Technical debt surfaced during Phase 0-1
 
-## In-source TODOs
+- [ ] `daemon/src/hooks/eventHandler.ts:1` — `TODO(Standalone version)` comment references the
+      now-deleted `server/src/` path. Retarget at `daemon/src/`.
+- [ ] `daemon/src/hooks/package.json` CJS-scope override is a workaround for the extension's
+      CJS scope. Long-term: either make the extension source ESM (esbuild still emits CJS) or
+      split the hooks subtree to its own package. Works today; unusual.
+- [ ] Daemon boot logic has no unit tests — only manually smoke-tested. Add once Day 5+ lands
+      enough infrastructure to make the test meaningful.
+- [ ] E2E suite covers exactly one scenario (clicking + Agent and seeing the JSONL appear).
+      More scenarios would be high-value insurance against regressions in later phases.
 
-- `grep -rn "TODO" src/ daemon/src --include="*.ts"`
-  Notable: `daemon/src/hooks/eventHandler.ts` has a `TODO(Standalone version)` about moving timerManager + types into `daemon/src/` to drop the cross-package import. Cleanup work; not blocking.
+## Design open questions (not blocking)
 
-## Historical record (do not edit)
+From `docs/tui-architecture.md` §23 — kept around because we'll need telemetry to answer them:
 
-These document past decisions and the design loop's progression:
+- Snapshot vs delta tick rate balance once clients are live.
+- Sixel throughput on Windows Terminal (target 20 fps; currently ⚠).
+- ConPTY edge cases on Windows with `claude`'s output sequences.
+- HSBC color quantization in the T5/T6 tiers — fidelity vs memory trade-off (current
+  choice is fidelity, store full HSBC and quantize at draw).
 
-- `docs/critique-r1.md`, `docs/critique-r2.md`
-- `docs/changes-r1-to-r2.md`, `docs/changes-r2-to-r3.md`
+## Source-of-truth docs
 
-## Conventions
+- `docs/tui-implementation-plan.md` — phased build plan with Progress block
+- `docs/tui-parity-checklist.md` — feature parity tracking (~100 items)
+- `docs/tui-architecture.md` — frozen design reference
+- `CLAUDE.md` — compressed file layout + key patterns
 
-- Add new items to the document that's authoritative for their kind, not to this file.
-- Tick parity checkboxes as features ship.
-- Update the implementation plan's Progress block when a phase or day completes.
-- Keep this file as an index — no items inline.
+## Recently done
+
+- ✅ Phase 1 Day 2 — port `server/` → `daemon/src/hooks/` + discovery chain + esbuild fix (`47c2288`, `b7ef2f3`, `08f5064`)
+- ✅ Phase 1 Day 1 — daemon scaffold + `config.json` read (`ab77a32`, `764da25`)
+- ✅ Phase 0 — MessageSender / TerminalRegistry / AgentRuntime decoupling (`3d36a3c`, `a6984c4`)
+
+## Historical — do not edit
+
+These are frozen snapshots of past states (rewriting them rewrites history):
+
+- `docs/critique-r1.md`, `docs/critique-r2.md` — design-loop critiques
+- `docs/changes-r1-to-r2.md`, `docs/changes-r2-to-r3.md` — design-loop deltas
