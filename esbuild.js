@@ -29,28 +29,37 @@ function copyAssets() {
 /**
  * Bundle hook scripts (TypeScript) to dist/hooks via esbuild.
  * Produces a self-contained CJS file with shebang for Claude Code to execute.
+ *
+ * Output filename is pinned to `claude-hook.js` (NOT derived from the source
+ * filename) because Claude Code's installed hooks reference that exact path.
+ * Source is daemon/src/hooks/providers/hook/claude/hooks/claudeHookSrc.ts.
  */
 function buildHooks() {
   const entry = path.join(
     __dirname,
-    'server',
+    'daemon',
     'src',
-    'providers',
-    'file',
     'hooks',
-    'claude-hook.ts',
+    'providers',
+    'hook',
+    'claude',
+    'hooks',
+    'claudeHookSrc.ts',
   );
-  if (!fs.existsSync(entry)) return;
+  if (!fs.existsSync(entry)) {
+    console.warn(`⚠️  Hook source not found at ${entry}; skipping bundle.`);
+    return;
+  }
   require('esbuild').buildSync({
     entryPoints: [entry],
     bundle: true,
     platform: 'node',
     target: 'node18',
     format: 'cjs',
-    outdir: path.join(__dirname, 'dist', 'hooks'),
+    outfile: path.join(__dirname, 'dist', 'hooks', 'claude-hook.js'),
     banner: { js: '#!/usr/bin/env node' },
   });
-  console.log('✓ Built hooks/ → dist/hooks/');
+  console.log('✓ Built daemon/src/hooks/.../claudeHookSrc.ts → dist/hooks/claude-hook.js');
 }
 
 /**
