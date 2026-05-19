@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BroadcastSink } from '../../src/agents/broadcastSink.js';
 import { AgentsRegistry, type PersistedAgent } from '../../src/agents/registry.js';
+import type { AssetRegistry } from '../../src/assets/registry.js';
 import type { PixelAgentsConfig } from '../../src/config/persistence.js';
 import { LayoutSaveDebouncer } from '../../src/layout/persistence.js';
 import type { WriterTag } from '../../src/persistence/writerTag.js';
@@ -64,6 +65,15 @@ async function makeCtx(): Promise<{
       config: { externalAssetDirectories: [], logLevel: 'info' } as PixelAgentsConfig,
     },
     triggerShutdown: vi.fn(),
+    assetRegistry: {
+      getCatalog: () => ({ assets: [], rotationGroups: new Map(), stateGroups: new Map() }),
+      getAssets: () => [],
+      getPng: () => null,
+      updateExternalDirs: () => {},
+      reload: () => {},
+      setSink: () => {},
+      setLogger: () => {},
+    } as unknown as AssetRegistry,
   };
   return { ctx, registry: buildMethodRegistry(), recorded };
 }
@@ -210,9 +220,9 @@ describe('agent methods', () => {
     if (res.ok) expect((res.data as { agents: PersistedAgent[] }).agents).toHaveLength(1);
   });
 
-  // Day 13-14 lit up agent.spawn/close + pty.input/resize. agent.focus and the
-  // rest still wait for later phases.
-  it.each(['agent.focus', 'agent.reassignSeat', 'agent.adopt', 'assets.list', 'hooks.toggle'])(
+  // Day 13-14 lit up agent.spawn/close + pty.input/resize. Day 1-3 lit up
+  // assets.list/requestBlob/addDir/removeDir. Remaining stubs wait for later phases.
+  it.each(['agent.focus', 'agent.reassignSeat', 'agent.adopt', 'hooks.toggle'])(
     '%s is gated as not_yet_supported',
     async (method) => {
       const { ctx, registry } = await makeCtx();
@@ -247,6 +257,76 @@ describe('agent methods', () => {
     );
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error.code).toBe('bad_params');
+  });
+});
+
+describe('asset methods', () => {
+  it('assets.list returns empty catalog from stub registry', async () => {
+    const { ctx, registry } = await makeCtx();
+    const res = await registry.dispatch(1, 'assets.list', {}, makeScope(), ctx);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const data = res.data as { assets: unknown[] };
+      expect(Array.isArray(data.assets)).toBe(true);
+    }
+  });
+
+  it('assets.requestBlob returns not_found for unknown assetId', async () => {
+    const { ctx, registry } = await makeCtx();
+    const res = await registry.dispatch(
+      1,
+      'assets.requestBlob',
+      { assetId: 'NONEXISTENT' },
+      makeScope(),
+      ctx,
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('not_found');
+  });
+
+  it('assets.requestBlob returns bad_params without assetId', async () => {
+    const { ctx, registry } = await makeCtx();
+    const res = await registry.dispatch(1, 'assets.requestBlob', {}, makeScope(), ctx);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('bad_params');
+  });
+
+  it('assets.addDir returns bad_params without dir', async () => {
+    const { ctx, registry } = await makeCtx();
+    const res = await registry.dispatch(1, 'assets.addDir', {}, makeScope(), ctx);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('bad_params');
+  });
+
+  it('assets.addDir succeeds with dir string', async () => {
+    const { ctx, registry } = await makeCtx();
+    const res = await registry.dispatch(
+      1,
+      'assets.addDir',
+      { dir: '/some/path' },
+      makeScope(),
+      ctx,
+    );
+    expect(res.ok).toBe(true);
+  });
+
+  it('assets.removeDir returns bad_params without dir', async () => {
+    const { ctx, registry } = await makeCtx();
+    const res = await registry.dispatch(1, 'assets.removeDir', {}, makeScope(), ctx);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('bad_params');
+  });
+
+  it('assets.removeDir succeeds with dir string', async () => {
+    const { ctx, registry } = await makeCtx();
+    const res = await registry.dispatch(
+      1,
+      'assets.removeDir',
+      { dir: '/some/path' },
+      makeScope(),
+      ctx,
+    );
+    expect(res.ok).toBe(true);
   });
 });
 

@@ -33,3 +33,19 @@ export const LAYOUT_JSON_PATH = path.join(PIXEL_AGENTS_DIR, 'layout.json');
 
 /** Daemon-private state scratchpad (anything that doesn't belong in the typed registries). */
 export const DAEMON_STATE_PATH = path.join(PIXEL_AGENTS_DIR, 'daemon-state.json');
+
+/**
+ * Bundled furniture asset directory.
+ *
+ * Set `PIXEL_AGENTS_ASSETS_DIR` to redirect all bundled-asset reads (e.g.
+ * for test isolation). Defaults to `webview-ui/public/assets/furniture`
+ * relative to the project root (4 levels up from the compiled daemon entry).
+ */
+export function getBundledAssetsDir(): string {
+  if (process.env.PIXEL_AGENTS_ASSETS_DIR) {
+    return path.join(process.env.PIXEL_AGENTS_ASSETS_DIR, 'furniture');
+  }
+  // Compiled daemon lives at daemon/dist/daemon/src/server.js → 4 levels up = project root.
+  const projectRoot = path.resolve(new URL('../../../..', import.meta.url).pathname);
+  return path.join(projectRoot, 'webview-ui', 'public', 'assets', 'furniture');
+}

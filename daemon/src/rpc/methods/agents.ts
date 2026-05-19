@@ -4,6 +4,7 @@ import { PtyHost } from '../../agents/ptyHost.js';
 import type { PersistedAgent } from '../../agents/registry.js';
 import { classifyExit, resolveJsonlPath } from '../../agents/resume.js';
 import { err, type Handler, type MethodRegistry, ok } from '../dispatch.js';
+import { BINARY_MAX_FRAME, encodeAsset } from '../framing.js';
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
@@ -82,10 +83,6 @@ const NOT_YET: Record<string, string> = {
   'agent.reassignSeat': 'seat reassignment lands once the office editor wires through',
   'agent.adopt': 'external session adoption lands once JSONL polling is fully ported',
   'pty.resync': 'PTY resync lands in Phase 2 (scrollback snapshot)',
-  'assets.list': 'asset loader port lands after persistence',
-  'assets.requestBlob': 'asset blob streaming lands in Phase 3',
-  'assets.addDir': 'asset directory management lands once asset loader ships',
-  'assets.removeDir': 'asset directory management lands once asset loader ships',
   'hooks.toggle': 'hook toggle RPC lands once persistence covers hook settings',
 };
 
@@ -237,7 +234,85 @@ export function registerAgentMethods(reg: MethodRegistry): void {
     return ok({});
   });
 
+  // ── Asset methods ─────────────────────────────────────────────────────────
+
+  reg.register('assets.list', (_params, _s, ctx) => {
+    const catalog = ctx.assetRegistry.getCatalog();
+    return ok({ assets: catalog.assets });
+  });
+
+  reg.register('assets.addDir', (params, _s, ctx) => {
+    if (
+      typeof params !== 'object' ||
+      params === null ||
+      typeof (params as { dir?: unknown }).dir !== 'string'
+    ) {
+      return err('bad_params', 'assets.addDir expects { dir: string }');
+    }
+    const dir = (params as { dir: string }).dir;
+    const current = ctx.state.config.externalAssetDirectories ?? [];
+    if (!current.includes(dir)) {
+      ctx.assetRegistry.updateExternalDirs([...current, dir]);
+    }
+    return ok({});
+  });
+
+  reg.register('assets.removeDir', (params, _s, ctx) => {
+    if (
+      typeof params !== 'object' ||
+      params === null ||
+      typeof (params as { dir?: unknown }).dir !== 'string'
+    ) {
+      return err('bad_params', 'assets.removeDir expects { dir: string }');
+    }
+    const dir = (params as { dir: string }).dir;
+    const current = ctx.state.config.externalAssetDirectories ?? [];
+    ctx.assetRegistry.updateExternalDirs(current.filter((d) => d !== dir));
+    return ok({});
+  });
+
+  reg.register('assets.requestBlob', (params, scope, ctx) => {
+    if (
+      typeof params !== 'object' ||
+      params === null ||
+      typeof (params as { assetId?: unknown }).assetId !== 'string'
+    ) {
+      return err('bad_params', 'assets.requestBlob expects { assetId: string, tier?: number }');
+    }
+    const assetId = (params as { assetId: string; tier?: number }).assetId;
+    const tier = (params as { assetId: string; tier?: number }).tier ?? 0;
+
+    const png = ctx.assetRegistry.getPng(assetId);
+    if (!png) {
+      return err('not_found', `no asset with id '${assetId}'`);
+    }
+
+    // Numeric asset ID: hash assetId string to a stable u32.
+    const numericId = stringAssetId(assetId);
+
+    // Chunk into BINARY_MAX_FRAME slices and write directly to the socket.
+    let offset = 0;
+    while (offset < png.length) {
+      const chunk = png.subarray(offset, offset + BINARY_MAX_FRAME);
+      const final = offset + chunk.length >= png.length;
+      const frame = encodeAsset(numericId, tier, chunk as Buffer, final);
+      scope.sock.write(frame);
+      offset += chunk.length;
+    }
+
+    return ok({ assetId, tier, bytes: png.length });
+  });
+
   for (const method of Object.keys(NOT_YET)) {
     reg.register(method, notYetHandler(method));
   }
+}
+
+/** Derive a stable u32 numeric ID from a string asset ID using djb2. */
+function stringAssetId(id: string): number {
+  let h = 5381;
+  for (let i = 0; i < id.length; i++) {
+    h = ((h << 5) + h + id.charCodeAt(i)) >>> 0;
+  }
+  return h;
 }

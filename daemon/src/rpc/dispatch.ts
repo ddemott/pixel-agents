@@ -4,6 +4,7 @@ import type { BroadcastSink } from '../agents/broadcastSink.js';
 import type { JsonlPoller } from '../agents/jsonlPoller.js';
 import type { LiveAgents } from '../agents/liveAgents.js';
 import type { AgentsRegistry } from '../agents/registry.js';
+import type { AssetRegistry } from '../assets/registry.js';
 import type { PixelAgentsConfig } from '../config/persistence.js';
 import type { DaemonHookBridge } from '../hookHost/bridge.js';
 import type { Layout, LayoutSaveDebouncer } from '../layout/persistence.js';
@@ -43,6 +44,8 @@ export interface DispatchContext {
   hookBridge: DaemonHookBridge;
   /** JSONL transcript poller. Started on spawn/revival; stopped on exit. */
   jsonlPoller?: JsonlPoller;
+  /** Furniture asset registry — built at boot from bundled + external dirs. */
+  assetRegistry: AssetRegistry;
   /** Structured logger for handler-internal events. */
   logger: Logger;
   /** Mutable refs the server.ts boot wires up so handlers always see fresh state. */

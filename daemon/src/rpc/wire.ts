@@ -68,15 +68,45 @@ export interface HelloAck {
 /**
  * Stub WorldSnapshot. The real `layout` shape is `OfficeLayout` from
  * `webview-ui/src/office/types.ts`; the daemon doesn't depend on that type
- * directly, so the layout slot is left as a loose record. Day 7+ will tighten
- * `assets` and `agents` once the registry is wired into helloAck.
+ * directly, so the layout slot is left as a loose record.
  */
 export interface WorldSnapshot {
   schemaVersion: 1;
   worldSeed: number;
   layout: Record<string, unknown> | null;
-  assets: { catalog: []; characters: []; floors: []; walls: [] };
+  assets: {
+    /** Flat furniture catalog — clients build rotation/state groups client-side. */
+    catalog: FurnitureCatalogEntry[];
+    /** Counts only; actual pixel data is fetched via assets.requestBlob. */
+    characterCount: number;
+    floorCount: number;
+    wallCount: number;
+  };
   agents: [];
+}
+
+/** Wire-safe subset of FurnitureAsset — matches shared/assets/manifestUtils FurnitureAsset. */
+export interface FurnitureCatalogEntry {
+  id: string;
+  name: string;
+  label: string;
+  category: string;
+  file: string;
+  width: number;
+  height: number;
+  footprintW: number;
+  footprintH: number;
+  isDesk: boolean;
+  canPlaceOnWalls: boolean;
+  canPlaceOnSurfaces?: boolean;
+  backgroundTiles?: number;
+  groupId?: string;
+  orientation?: string;
+  state?: string;
+  mirrorSide?: boolean;
+  rotationScheme?: string;
+  animationGroup?: string;
+  frame?: number;
 }
 
 /** Type guard: minimal validation that `msg` is shaped like a Hello. */

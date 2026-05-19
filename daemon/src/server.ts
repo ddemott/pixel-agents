@@ -11,6 +11,8 @@ import { JsonlPoller } from './agents/jsonlPoller.js';
 import { LiveAgents } from './agents/liveAgents.js';
 import { AgentsRegistry } from './agents/registry.js';
 import { reviveAgentsOnBoot } from './agents/resume.js';
+import { AssetRegistry } from './assets/registry.js';
+import { watchAllAssetDirs } from './assets/watcher.js';
 import { readConfig, watchConfig } from './config/persistence.js';
 import {
   clearDiscoveryIfOwned,
@@ -25,7 +27,12 @@ import { type HookHTTPServerHandle, startHookServer } from './hookHost/server.js
 import { LayoutSaveDebouncer, readLayout, watchLayout } from './layout/persistence.js';
 import { createFileLogger, type Logger } from './logging/logger.js';
 import { sweepLogs } from './logging/retention.js';
-import { DAEMON_LOG_DIR, DAEMON_SOCKET_PATH, DAEMON_STATE_PATH } from './paths.js';
+import {
+  DAEMON_LOG_DIR,
+  DAEMON_SOCKET_PATH,
+  DAEMON_STATE_PATH,
+  getBundledAssetsDir,
+} from './paths.js';
 import type { WriterTag } from './persistence/writerTag.js';
 import { attachConnection } from './rpc/connection.js';
 import type { DispatchContext } from './rpc/dispatch.js';
@@ -250,6 +257,18 @@ async function main(): Promise<void> {
   const liveAgents = new LiveAgents();
   const jsonlPoller = new JsonlPoller(sink, logger);
 
+  const assetRegistry = new AssetRegistry({
+    bundled: getBundledAssetsDir(),
+    external: sharedState.config.externalAssetDirectories ?? [],
+  });
+  assetRegistry.setSink(sink);
+  assetRegistry.setLogger(logger);
+
+  const stopAssetWatcher = watchAllAssetDirs(
+    [getBundledAssetsDir(), ...(sharedState.config.externalAssetDirectories ?? [])],
+    assetRegistry,
+  );
+
   // Forward-declared so `daemon.shutdown` (registered before this assignment
   // resolves) can call into the shutdown handler defined below.
   let shutdown: (signal: string) => void = () => {};
@@ -261,6 +280,7 @@ async function main(): Promise<void> {
     liveAgents,
     hookBridge,
     jsonlPoller,
+    assetRegistry,
     logger,
     state: sharedState,
     triggerShutdown: () => shutdown('rpc'),
@@ -270,7 +290,12 @@ async function main(): Promise<void> {
     schemaVersion: 1,
     worldSeed: 0,
     layout: sharedState.layout,
-    assets: { catalog: [], characters: [], floors: [], walls: [] },
+    assets: {
+      catalog: assetRegistry.getAssets(),
+      characterCount: 0,
+      floorCount: 0,
+      wallCount: 0,
+    },
     agents: [],
   });
 
@@ -325,6 +350,7 @@ async function main(): Promise<void> {
     // shutdown is RPC-triggered. On signal shutdown we lean on the daemon's
     // own 2s hard-kill timer below.
     jsonlPoller.stopAll();
+    stopAssetWatcher();
     for (const live of liveAgents.list()) live.pty.kill('SIGTERM');
     void hookHandle.close();
     server.close(() => {
