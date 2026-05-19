@@ -1,4 +1,5 @@
 mod wire;
+mod framing;
 mod connection;
 mod discovery;
 

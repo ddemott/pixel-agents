@@ -1,21 +1,14 @@
-// Day 2 — UDS connect + hello/helloAck handshake + bootId pinning.
-//
-// Framing (arch §10, framing.ts):
-//   0x00 NDJSON : [0x00][json bytes][0x0a]         (256 KB max)
-//   0x01 PTY out: [0x01][streamId:u32be][len:u32be][bytes]  (1 MB max)
-//   0x02 asset  : [0x02][assetId:u32be][tier:u8][len:u32be][bytes]
-//   0x03 PTY in : [0x03][streamId:u32be][len:u32be][bytes]  (1 MB max)
+// Day 3-4 update: receive path uses FrameDecoder; send path uses encode_ndjson.
 
 use anyhow::{bail, Context, Result};
-use bytes::{BufMut, BytesMut};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
+use tokio::net::unix::OwnedReadHalf;
 use tokio::net::UnixStream;
+use tokio::io::AsyncReadExt;
 
 use super::discovery::read_discovery;
+use super::framing::{encode_ndjson, Frame, FrameDecoder};
 use super::wire::{ClientCapabilities, Hello, Inbound};
-
-const NDJSON_TAG: u8 = 0x00;
-const NDJSON_CAP: usize = 256 * 1024;
 
 pub async fn connect() -> Result<()> {
     let disc = read_discovery().context("read daemon discovery")?;
@@ -24,17 +17,18 @@ pub async fn connect() -> Result<()> {
         .await
         .with_context(|| format!("connect to {}", disc.socket_path))?;
 
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
+    let (mut reader, mut writer) = stream.into_split();
 
-    // Send hello — [0x00][json]\n
     let caps = ClientCapabilities::stub(220, 50);
     let hello = Hello::new(disc.token.clone(), caps);
-    send_ndjson(&mut writer, &hello).await?;
+    let frame_bytes = encode_ndjson(&hello).map_err(|e| anyhow::anyhow!("{e}"))?;
+    writer.write_all(&frame_bytes).await.context("send hello")?;
 
-    // Await helloAck — read one NDJSON frame
-    let line = recv_ndjson_line(&mut reader).await?;
-    let ack: Inbound = serde_json::from_str(&line).context("parse helloAck")?;
+    let frame = recv_one_frame(&mut reader).await?;
+    let Frame::Ndjson(json) = frame else {
+        bail!("expected NDJSON frame for helloAck, got binary frame");
+    };
+    let ack: Inbound = serde_json::from_str(&json).context("parse helloAck")?;
 
     match ack {
         Inbound::HelloAck(ack) => {
@@ -59,44 +53,18 @@ pub async fn connect() -> Result<()> {
     Ok(())
 }
 
-// ── Framing helpers ───────────────────────────────────────────────────────────
-
-async fn send_ndjson<W: AsyncWriteExt + Unpin, T: serde::Serialize>(
-    writer: &mut W,
-    value: &T,
-) -> Result<()> {
-    let payload = serde_json::to_vec(value)?;
-    if payload.len() > NDJSON_CAP {
-        bail!("outbound NDJSON frame too large: {} bytes", payload.len());
+async fn recv_one_frame(stream: &mut OwnedReadHalf) -> Result<Frame> {
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = stream.read(&mut buf).await.context("read frame")?;
+        if n == 0 {
+            bail!("connection closed before complete frame");
+        }
+        decoder.push(&buf[..n]);
+        let mut frames = decoder.drain().map_err(|e| anyhow::anyhow!("{e}"))?;
+        if !frames.is_empty() {
+            return Ok(frames.remove(0));
+        }
     }
-    let mut buf = BytesMut::with_capacity(2 + payload.len());
-    buf.put_u8(NDJSON_TAG);
-    buf.extend_from_slice(&payload);
-    buf.put_u8(b'\n');
-    writer.write_all(&buf).await.context("write NDJSON frame")?;
-    Ok(())
-}
-
-/// Read one NDJSON frame: skip the 0x00 tag byte, read until `\n`.
-async fn recv_ndjson_line<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<String> {
-    // Peek / consume the tag byte.
-    let mut tag = [0u8; 1];
-    reader.read_exact(&mut tag).await.context("read frame tag")?;
-    if tag[0] != NDJSON_TAG {
-        bail!("expected NDJSON tag 0x00, got 0x{:02x}", tag[0]);
-    }
-
-    let mut line = String::new();
-    let n = reader
-        .read_line(&mut line)
-        .await
-        .context("read NDJSON line")?;
-    if n == 0 {
-        bail!("connection closed before helloAck");
-    }
-    // Strip trailing newline.
-    if line.ends_with('\n') {
-        line.pop();
-    }
-    Ok(line)
 }
