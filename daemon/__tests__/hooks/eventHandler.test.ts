@@ -34,8 +34,12 @@ function createTestAgent(overrides: Partial<AgentState> = {}): AgentState {
 
 function createMockSink() {
   const messages: Array<Record<string, unknown>> = [];
+  const post = vi.fn((msg: Record<string, unknown>) => {
+    messages.push(msg);
+  });
   return {
-    post: vi.fn((msg: Record<string, unknown>) => {
+    post,
+    emitTo: vi.fn((_agentId: number, msg: Record<string, unknown>) => {
       messages.push(msg);
     }),
     messages,
