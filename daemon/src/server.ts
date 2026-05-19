@@ -7,7 +7,9 @@ import { setAgentRuntime } from '../../src/agentRuntime.js';
 import { BroadcastSink } from './agents/broadcastSink.js';
 import { DaemonRuntime } from './agents/daemonRuntime.js';
 import { FileStateStore } from './agents/fileStateStore.js';
+import { LiveAgents } from './agents/liveAgents.js';
 import { AgentsRegistry } from './agents/registry.js';
+import { reviveAgentsOnBoot } from './agents/resume.js';
 import { readConfig, watchConfig } from './config/persistence.js';
 import {
   clearDiscoveryIfOwned,
@@ -226,6 +228,7 @@ async function main(): Promise<void> {
 
   const layoutDebouncer = new LayoutSaveDebouncer(ours);
   const registry = buildMethodRegistry();
+  const liveAgents = new LiveAgents();
 
   // Forward-declared so `daemon.shutdown` (registered before this assignment
   // resolves) can call into the shutdown handler defined below.
@@ -235,6 +238,9 @@ async function main(): Promise<void> {
     sink,
     agents,
     layoutDebouncer,
+    liveAgents,
+    hookBridge,
+    logger,
     state: sharedState,
     triggerShutdown: () => shutdown('rpc'),
   };
@@ -272,6 +278,16 @@ async function main(): Promise<void> {
     'daemon started',
   );
 
+  // Revive persisted agents in the background. Clients that connect during
+  // revival will receive `agent.created { isResumed: true }` events as each
+  // agent passes its 3 s health check.
+  void reviveAgentsOnBoot({ agents, liveAgents, sink, hookBridge, logger }).catch((e) => {
+    logger.error(
+      { module: 'resume', error: e instanceof Error ? e.message : String(e) },
+      'reviveAgentsOnBoot threw unexpectedly',
+    );
+  });
+
   let shuttingDown = false;
   shutdown = (signal: string): void => {
     if (shuttingDown) return;
@@ -281,6 +297,11 @@ async function main(): Promise<void> {
     layoutDebouncer.flushNow();
     layoutWatcher.dispose();
     configWatcher.dispose();
+    // Kill every live PTY so claude children don't outlive us. SIGTERM first;
+    // the per-agent KILL_GRACE inside agent.close handles escalation when the
+    // shutdown is RPC-triggered. On signal shutdown we lean on the daemon's
+    // own 2s hard-kill timer below.
+    for (const live of liveAgents.list()) live.pty.kill('SIGTERM');
     void hookHandle.close();
     server.close(() => {
       clearDiscoveryIfOwned(process.pid);

@@ -2,16 +2,48 @@
 
 Active items by priority. For background and big-picture plans, see the linked docs at the bottom.
 
-## Now — Phase 1 Day 13-14
+## Now — Phase 2
 
-- [ ] **Day 13-14** — agent spawn + JSONL polling end-to-end.
+- [ ] JSONL polling port (deferred from Day 13-14). Watch `~/.claude/projects/<hash>/<sessionId>.jsonl`
+      per live agent, parse tool_use / tool_result, emit `agent.toolStart` / `agent.toolDone`
+      events that complement the hook bridge.
 
-## Next — Phase 1 Day 15-16
+## Next
 
-- [ ] **Day 15-16** — `claude --resume` revival on daemon restart.
+- [ ] Daemon supervisor integration (systemd/launchd/Scheduled Task per arch §17).
+
+## Recently done
+
+- ✅ Phase 1 Day 15-16 — `claude --resume` revival on daemon restart. `daemon/src/agents/resume.ts` (`reviveAgentsOnBoot` iterates `agents.json` per-cwd: JSONL liveness gate (exists + mtime <30d), `claude --resume <sessionId>` via PtyHost, 3s health check via Promise.race). Seven failure paths: JSONL missing/stale → drop entry + log; exit 127 (claude_missing) → emit `agent.spawnFailed { reason: "claude_missing" }`, keep entry; exit 2 + "session format version mismatch" → `agent.spawnFailed { reason: "claude_upgraded" }`, keep entry; other early exit → drop; hangs → keep PTY alive. Successful revival emits `agent.created { isResumed: true }` + refreshes `lastSeenAt` in agents.json. `classifyExit()` helper also wired into `agent.spawn`'s `onExit` handler so `agent.exited` events ship `reason: "user" | "crash" | "claude_missing"`. Clean user-exit (`reason: "user"`) now removes the agent from persistence so daemon restart doesn't attempt `--resume` for closed sessions. Revival fires in background after daemon socket is open so clients connect immediately. `reviveAgentsOnBoot` call in `server.ts` after full context setup. 10 new Vitest cases using `vi.resetModules()` + dynamic imports for path isolation (255/255 total). Build clean.
 
 ## Technical debt surfaced during Phase 0-1
 
+- [ ] `DaemonHookBridge` drops `SubagentStart` / `SubagentStop` hook events (default debug-log
+      branch). Need `agent.subagentStart` / `agent.subagentEnd` topics so clients can render
+      the parent character's Task subtask state. Surfaced during Day 13-14.
+- [ ] `PtyHost.onData` calls `sink.broadcastPty(...)` unconditionally — never consults the
+      Day 9-10 backpressure flag. `BroadcastSink.register` exposes `onPause`/`onResume`
+      callbacks for exactly this. Wire the PTY pump to pause `pty.read()` when a connection
+      backs up so we don't OOM on a wedged client.
+- [ ] `src/configPersistence.ts` (VS Code extension) writes `{ externalAssetDirectories }`
+      only — strips the daemon's `logLevel` field on next write. Move to a per-field patch
+      that preserves unknown keys, or have the extension read+merge before writing.
+- [ ] Hook script discovery chain (`daemon/src/hooks/providers/hook/claude/hooks/claudeHookSrc.ts`)
+      still falls through to `server.json` after `daemon.json` lacks a `hookPort`. Now that
+      the daemon owns the hook server, that branch is only reachable when the extension is
+      running without a daemon. Either decide to deprecate the extension-hosted server
+      (Phase 6) or leave the branch + add a comment that it's transitional.
+- [ ] `agent.spawn` reports synchronous spawn failures via `err('spawn_failed', …)`, but
+      node-pty's ENOENT for a missing `claude` binary lands asynchronously through `onExit`
+      with exit code 127 — currently broadcast as a generic `agent.exited`. Per arch §error
+      paths, should emit `agent.spawnFailed { reason: "claude_missing" }` instead so clients
+      can toast.
+- [ ] `agent.spawn` persists `palette: 0, hueShift: 0` for every new agent. Port the
+      extension's `pickDiversePalette()` (counts current characters, picks least-used; first
+      6 get unique skin, beyond that repeats with random hue rotation).
+- [ ] `agent.exited` ships `{exitCode, signal}` but no semantic `reason` field
+      (`"user" | "session_expired" | "claude_upgraded" | "crash"` per arch §10). Classify in
+      Day 15-16 alongside `--resume` recovery so the matrix despawn effect can pick a tone.
 - [ ] `daemon/src/hooks/eventHandler.ts:1` — `TODO(Standalone version)` comment references the
       now-deleted `server/src/` path. Retarget at `daemon/src/`.
 - [ ] `daemon/src/hooks/package.json` CJS-scope override is a workaround for the extension's
@@ -41,6 +73,7 @@ From `docs/tui-architecture.md` §23 — kept around because we'll need telemetr
 
 ## Recently done
 
+- ✅ Phase 1 Day 13-14 — Agent spawn + PTY hosting. `daemon/src/agents/ptyHost.ts` (`PtyHost` wrapper around node-pty; constructor injects `spawn` for tests, exposes `write` / `resize` / `kill`, fires `onData` / `onExit`). `daemon/src/agents/liveAgents.ts` (`LiveAgents` Map<id, LiveAgent> w/ allocate / reserve / add / get / bySession / remove). `BroadcastSink.broadcastPty(agentId, bytes)` ships raw bytes as 0x01 frames to subscribers of `agent:<id>` / `agent:*` / unfiltered; auto-splits payloads above the 1 MB framing cap. `agent.spawn` (sessionId UUID + alloc agentId + register session→agentId in hookBridge + spawn `claude --session-id <uuid>` + persist to AgentsRegistry + emit `agent.created` + return `{id, sessionId}`), `agent.close` (SIGTERM + SIGKILL escalation 2 s + depersist), `pty.input` (base64 → write), `pty.resize` (positive cols/rows). `DispatchContext` gains `liveAgents`, `hookBridge`, `logger`. Shutdown kills all live PTYs. `node-pty@^1.2.0-beta.13` dep. 12 new Vitest cases including real `/bin/cat` PTY round-trip (245/245 total). Live smoke: PIXEL_AGENTS_HOME=/tmp/pa-smoke2 daemon boots, publishes daemon.json, accepts SIGTERM cleanly.
 - ✅ Phase 1 Day 12 — Hook integration test: HTTP → bridge → sink → mock client. New `daemon/src/hookHost/{server,bridge}.ts`: minimal 127.0.0.1 hook HTTP server (port 0, Bearer auth = daemon's UDS token, JSON body, `/api/hooks/:providerId`) + `DaemonHookBridge` (sessionId→agentId map, per-agent toolId stack, normalizes SessionStart/PreToolUse/PostToolUse/Stop/UserPromptSubmit/PermissionRequest/Notification to `agent.created`/`agent.toolStart`/`agent.toolDone`/`agent.statusChanged`/`agent.exited` topics). `daemon.json` now publishes `hookPort`. `PIXEL_AGENTS_HOME` env override in `paths.ts` so tests isolate from real daemon. `daemon/__tests__/hookHost/integration.test.ts` boots real BroadcastSink + bridge + HTTP server + UDS, drives end-to-end via POSTs + UDS subscribe. 3 new Vitest cases (232/232 total). Live smoke: `PIXEL_AGENTS_HOME=/tmp/pa-smoke node server.js --foreground` writes daemon.json with hookPort, accepts auth'd POSTs, `ok` reply.
 - ✅ Phase 1 Day 11 — NDJSON logging. `daemon/src/logging/{logger,retention}.ts`: file-per-UTC-day at `~/.pixel-agents/logs/daemon-YYYY-MM-DD.log` (sync `openSync('a')` + `writeSync`, 0o600), pinned `{ts, level, module, agentId?, ..., msg}` key order, `setLevel()` for runtime updates, optional stderr mirror for `--foreground`. `logLevel` field added to `config/persistence.ts` (default `info`, watcher updates logger on external write). Retention sweep gzips `*.log` >7d → `*.log.gz`, deletes `*.log[.gz]` >30d; runs at boot + every 24 h (unref'd interval). `BroadcastSink.setLogger()` injection replaces its `console.error`. 13 new Vitest cases (229/229 total). Live smoke: boot/shutdown round-trip writes valid NDJSON.
 - ✅ Phase 1 Day 9-10 — daemon-side `AgentEventSink` bus + per-agent scope + backpressure. `BroadcastSink.emitTo(agentId, event)` filters by per-conn `agent:<id>` / `agent:*` subscriptions (no `agent:` filter = implicit subscribe-all). Per-conn high-water-mark backpressure: `sock.write()` false flips subscriber to paused, frames spill into bounded `SUBSCRIBER_QUEUE_MAX = 256` ring (oldest dropped on overflow, `droppedFrames` counter for diagnostics); `'drain'` flushes + fires `onResume`. `register(sock, subs, { onPause, onResume })` exposes the hooks PTY pumps will gate on (Day 13-14).
