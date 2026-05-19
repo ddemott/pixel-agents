@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as net from 'net';
 
+import { readConfig } from './config.js';
 import {
   clearDiscoveryIfOwned,
   type DaemonDiscovery,
@@ -75,6 +76,11 @@ async function main(): Promise<void> {
   const startedAt = Date.now();
 
   ensurePixelAgentsDir();
+
+  const config = readConfig();
+  console.log(
+    `[Daemon] Config loaded: externalAssetDirectories=${config.externalAssetDirectories.length}`,
+  );
 
   const state = checkExistingDaemon();
   if (state === 'owned-by-live-pid') {

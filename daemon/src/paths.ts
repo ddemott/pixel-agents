@@ -12,3 +12,6 @@ export const DAEMON_SOCKET_PATH = path.join(PIXEL_AGENTS_DIR, 'daemon.sock');
 
 /** Daemon log directory. */
 export const DAEMON_LOG_DIR = path.join(PIXEL_AGENTS_DIR, 'logs');
+
+/** User-level config file (shared with the VS Code extension). */
+export const CONFIG_JSON_PATH = path.join(PIXEL_AGENTS_DIR, 'config.json');
