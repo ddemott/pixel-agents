@@ -1,9 +1,9 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import * as vscode from 'vscode';
 
 import { JSONL_POLL_INTERVAL_MS } from '../server/src/constants.js';
+import { type AgentStateStore, getAgentRuntime } from './agentRuntime.js';
 import {
   TERMINAL_NAME_PREFIX,
   WORKSPACE_KEY_AGENT_SEATS,
@@ -16,6 +16,8 @@ import {
   startFileWatching,
 } from './fileWatcher.js';
 import { migrateAndLoadLayout } from './layoutPersistence.js';
+import type { AgentEventSink } from './messageSender.js';
+import { getTerminalRegistry, type TerminalLike } from './terminalRegistry.js';
 import { cancelPermissionTimer, cancelWaitingTimer } from './timerManager.js';
 import type { AgentState, PersistedAgent } from './types.js';
 
@@ -25,7 +27,7 @@ export function getProjectDirPath(cwd?: string): string {
   // (e.g. `code` with no arguments). Claude Code writes JSONL files to
   // ~/.claude/projects/<hash>/ where <hash> is derived from the process cwd, so we
   // must use the same directory as the terminal's working directory.
-  const workspacePath = cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || os.homedir();
+  const workspacePath = cwd || getAgentRuntime().getWorkspaceFolders()[0]?.fsPath || os.homedir();
   const dirName = workspacePath.replace(/[^a-zA-Z0-9-]/g, '-');
   const projectDir = path.join(os.homedir(), '.claude', 'projects', dirName);
   console.log(`[Pixel Agents] Terminal: Project dir: ${workspacePath} → ${dirName}`);
@@ -72,19 +74,19 @@ export async function launchNewTerminal(
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
   jsonlPollTimers: Map<number, ReturnType<typeof setInterval>>,
   projectScanTimerRef: { current: ReturnType<typeof setInterval> | null },
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
   folderPath?: string,
   bypassPermissions?: boolean,
 ): Promise<void> {
-  const folders = vscode.workspace.workspaceFolders;
+  const folders = getAgentRuntime().getWorkspaceFolders();
   // Use home directory as fallback cwd when no workspace is open (common on Linux/macOS).
   // This ensures the terminal starts in a predictable location that matches the project
   // dir hash Claude Code will use for JSONL transcript files.
-  const cwd = folderPath || folders?.[0]?.uri.fsPath || os.homedir();
-  const isMultiRoot = !!(folders && folders.length > 1);
+  const cwd = folderPath || folders[0]?.fsPath || os.homedir();
+  const isMultiRoot = folders.length > 1;
   const idx = nextTerminalIndexRef.current++;
-  const terminal = vscode.window.createTerminal({
+  const terminal = getTerminalRegistry().create({
     name: `${TERMINAL_NAME_PREFIX} #${idx}`,
     cwd,
   });
@@ -136,7 +138,7 @@ export async function launchNewTerminal(
   activeAgentIdRef.current = id;
   persistAgents();
   console.log(`[Pixel Agents] Terminal: Agent ${id} - created for terminal ${terminal.name}`);
-  webview?.postMessage({ type: 'agentCreated', id, folderName });
+  sink.post({ type: 'agentCreated', id, folderName });
 
   ensureProjectScan(
     projectDir,
@@ -149,7 +151,7 @@ export async function launchNewTerminal(
     pollingTimers,
     waitingTimers,
     permissionTimers,
-    webview,
+    sink,
     persistAgents,
   );
 
@@ -174,9 +176,9 @@ export async function launchNewTerminal(
           pollingTimers,
           waitingTimers,
           permissionTimers,
-          webview,
+          sink,
         );
-        readNewLines(id, agents, waitingTimers, permissionTimers, webview);
+        readNewLines(id, agents, waitingTimers, permissionTimers, sink);
       } else if (pollCount === 10) {
         // After 10s of polling, warn with path details to help diagnose path encoding mismatches
         const dirExists = fs.existsSync(projectDir);
@@ -227,7 +229,7 @@ export async function launchNewTerminal(
               pollingTimers,
               waitingTimers,
               permissionTimers,
-              webview,
+              sink,
               persistAgents,
             );
           }
@@ -280,10 +282,7 @@ export function removeAgent(
   persistAgents();
 }
 
-export function persistAgents(
-  agents: Map<number, AgentState>,
-  context: vscode.ExtensionContext,
-): void {
+export function persistAgents(agents: Map<number, AgentState>, store: AgentStateStore): void {
   const persisted: PersistedAgent[] = [];
   for (const agent of agents.values()) {
     persisted.push({
@@ -301,11 +300,11 @@ export function persistAgents(
       teamUsesTmux: agent.teamUsesTmux,
     });
   }
-  context.workspaceState.update(WORKSPACE_KEY_AGENTS, persisted);
+  void store.set(WORKSPACE_KEY_AGENTS, persisted);
 }
 
 export function restoreAgents(
-  context: vscode.ExtensionContext,
+  store: AgentStateStore,
   nextAgentIdRef: { current: number },
   nextTerminalIndexRef: { current: number },
   agents: Map<number, AgentState>,
@@ -317,13 +316,13 @@ export function restoreAgents(
   jsonlPollTimers: Map<number, ReturnType<typeof setInterval>>,
   projectScanTimerRef: { current: ReturnType<typeof setInterval> | null },
   activeAgentIdRef: { current: number | null },
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   doPersist: () => void,
 ): void {
-  const persisted = context.workspaceState.get<PersistedAgent[]>(WORKSPACE_KEY_AGENTS, []);
+  const persisted = store.get<PersistedAgent[]>(WORKSPACE_KEY_AGENTS) ?? [];
   if (persisted.length === 0) return;
 
-  const liveTerminals = vscode.window.terminals;
+  const liveTerminals = getTerminalRegistry().list();
   let maxId = 0;
   let maxIdx = 0;
   let restoredProjectDir: string | null = null;
@@ -336,7 +335,7 @@ export function restoreAgents(
       continue;
     }
 
-    let terminal: vscode.Terminal | undefined;
+    let terminal: TerminalLike | undefined;
     const isExternal = p.isExternal ?? false;
 
     if (isExternal) {
@@ -419,7 +418,7 @@ export function restoreAgents(
           pollingTimers,
           waitingTimers,
           permissionTimers,
-          webview,
+          sink,
         );
       } else {
         // Poll for the file to appear
@@ -439,7 +438,7 @@ export function restoreAgents(
                 pollingTimers,
                 waitingTimers,
                 permissionTimers,
-                webview,
+                sink,
               );
             }
           } catch {
@@ -478,7 +477,7 @@ export function restoreAgents(
             jsonlPollTimers,
             doPersist,
           );
-          webview?.postMessage({ type: 'agentClosed', id });
+          sink.post({ type: 'agentClosed', id });
         }
       }
     }, 10_000); // 10 seconds grace period
@@ -508,7 +507,7 @@ export function restoreAgents(
       pollingTimers,
       waitingTimers,
       permissionTimers,
-      webview,
+      sink,
       doPersist,
     );
   }
@@ -516,10 +515,10 @@ export function restoreAgents(
 
 export function sendExistingAgents(
   agents: Map<number, AgentState>,
-  context: vscode.ExtensionContext,
-  webview: vscode.Webview | undefined,
+  store: AgentStateStore,
+  sink: AgentEventSink,
 ): void {
-  if (!webview) return;
+  if (!sink) return;
   const agentIds: number[] = [];
   for (const id of agents.keys()) {
     agentIds.push(id);
@@ -527,9 +526,9 @@ export function sendExistingAgents(
   agentIds.sort((a, b) => a - b);
 
   // Include persisted palette/seatId from separate key
-  const agentMeta = context.workspaceState.get<
-    Record<string, { palette?: number; seatId?: string }>
-  >(WORKSPACE_KEY_AGENT_SEATS, {});
+  const agentMeta =
+    store.get<Record<string, { palette?: number; seatId?: string }>>(WORKSPACE_KEY_AGENT_SEATS) ??
+    {};
 
   // Include folderName and isExternal per agent
   const folderNames: Record<number, string> = {};
@@ -546,7 +545,7 @@ export function sendExistingAgents(
     `[Pixel Agents] sendExistingAgents: agents=${JSON.stringify(agentIds)}, meta=${JSON.stringify(agentMeta)}`,
   );
 
-  webview.postMessage({
+  sink.post({
     type: 'existingAgents',
     agents: agentIds,
     agentMeta,
@@ -559,14 +558,14 @@ export function sendExistingAgents(
 
 export function sendCurrentAgentStatuses(
   agents: Map<number, AgentState>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
 ): void {
-  if (!webview) return;
+  if (!sink) return;
   for (const [agentId, agent] of agents) {
     // Re-send active tools
     for (const [toolId, status] of agent.activeToolStatuses) {
       const toolName = agent.activeToolNames.get(toolId) ?? '';
-      webview.postMessage({
+      sink.post({
         type: 'agentToolStart',
         id: agentId,
         toolId,
@@ -576,7 +575,7 @@ export function sendCurrentAgentStatuses(
     }
     // Re-send waiting status
     if (agent.isWaiting) {
-      webview.postMessage({
+      sink.post({
         type: 'agentStatus',
         id: agentId,
         status: 'waiting',
@@ -584,7 +583,7 @@ export function sendCurrentAgentStatuses(
     }
     // Re-send team metadata
     if (agent.teamName) {
-      webview.postMessage({
+      sink.post({
         type: 'agentTeamInfo',
         id: agentId,
         teamName: agent.teamName,
@@ -596,7 +595,7 @@ export function sendCurrentAgentStatuses(
     }
     // Re-send token usage
     if (agent.inputTokens > 0 || agent.outputTokens > 0) {
-      webview.postMessage({
+      sink.post({
         type: 'agentTokenUsage',
         id: agentId,
         inputTokens: agent.inputTokens,
@@ -607,13 +606,12 @@ export function sendCurrentAgentStatuses(
 }
 
 export function sendLayout(
-  context: vscode.ExtensionContext,
-  webview: vscode.Webview | undefined,
+  store: AgentStateStore,
+  sink: AgentEventSink,
   defaultLayout?: Record<string, unknown> | null,
 ): void {
-  if (!webview) return;
-  const result = migrateAndLoadLayout(context, defaultLayout);
-  webview.postMessage({
+  const result = migrateAndLoadLayout(store, defaultLayout);
+  sink.post({
     type: 'layoutLoaded',
     layout: result?.layout ?? null,
     wasReset: result?.wasReset ?? false,

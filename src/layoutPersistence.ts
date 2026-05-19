@@ -1,8 +1,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { ExtensionContext } from 'vscode';
 
+import type { AgentStateStore } from './agentRuntime.js';
 import {
   LAYOUT_FILE_DIR,
   LAYOUT_FILE_NAME,
@@ -62,7 +62,7 @@ interface LayoutLoadResult {
  * 4. Else → return null
  */
 export function migrateAndLoadLayout(
-  context: ExtensionContext,
+  store: AgentStateStore,
   defaultLayout?: Record<string, unknown> | null,
 ): LayoutLoadResult | null {
   // 1. Try file — but reset if bundled default has a newer revision
@@ -82,11 +82,11 @@ export function migrateAndLoadLayout(
   }
 
   // 2. Migrate from workspace state
-  const fromState = context.workspaceState.get<Record<string, unknown>>(WORKSPACE_KEY_LAYOUT);
+  const fromState = store.get<Record<string, unknown>>(WORKSPACE_KEY_LAYOUT);
   if (fromState) {
     console.log('[Pixel Agents] Migrating layout from workspace state to file');
     writeLayoutToFile(fromState);
-    context.workspaceState.update(WORKSPACE_KEY_LAYOUT, undefined);
+    void store.set(WORKSPACE_KEY_LAYOUT, undefined);
     return { layout: fromState, wasReset: false };
   }
 

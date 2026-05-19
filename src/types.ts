@@ -1,10 +1,10 @@
-import type * as vscode from 'vscode';
+import type { TerminalLike } from './terminalRegistry.js';
 
 export interface AgentState {
   id: number;
   sessionId: string;
   /** Terminal reference — undefined for extension panel sessions */
-  terminalRef?: vscode.Terminal;
+  terminalRef?: TerminalLike;
   /** Whether this agent was detected from an external source (VS Code extension panel, etc.) */
   isExternal: boolean;
   projectDir: string;

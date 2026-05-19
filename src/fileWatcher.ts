@@ -21,7 +21,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import * as vscode from 'vscode';
 
 const debug = process.env.PIXEL_AGENTS_DEBUG !== '0';
 
@@ -39,6 +38,8 @@ import {
 import type { TeamProvider } from '../server/src/teamProvider.js';
 import { removeAgent } from './agentManager.js';
 import { TERMINAL_NAME_PREFIX } from './constants.js';
+import type { AgentEventSink } from './messageSender.js';
+import { getTerminalRegistry, type TerminalLike } from './terminalRegistry.js';
 import { cancelPermissionTimer, cancelWaitingTimer, clearAgentActivity } from './timerManager.js';
 import { processTranscriptLine } from './transcriptParser.js';
 import type { AgentState } from './types.js';
@@ -65,7 +66,7 @@ let clearDetectionDeps: {
   pollingTimers: Map<number, ReturnType<typeof setInterval>>;
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>;
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>;
-  webview: vscode.Webview | undefined;
+  sink: AgentEventSink;
   persistAgents: () => void;
 } | null = null;
 
@@ -77,7 +78,7 @@ export function startFileWatching(
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
 ): void {
   // Single polling approach: reliable on all platforms (macOS, Linux, WSL2, Windows).
   // Previously used triple-redundant fs.watch + fs.watchFile + setInterval, but
@@ -91,7 +92,7 @@ export function startFileWatching(
     }
     const agent = agents.get(agentId)!;
     const prevOffset = agent.fileOffset;
-    readNewLines(agentId, agents, waitingTimers, permissionTimers, webview);
+    readNewLines(agentId, agents, waitingTimers, permissionTimers, sink);
 
     // HEURISTIC FALLBACK: Per-agent /clear detection (skipped when hooks handle sessions).
     // When hooks are active, SessionEnd+SessionStart handle /clear reliably.
@@ -153,7 +154,7 @@ export function startFileWatching(
             deps.pollingTimers,
             deps.waitingTimers,
             deps.permissionTimers,
-            deps.webview,
+            deps.sink,
             deps.persistAgents,
           );
           break; // Only claim one file per poll
@@ -171,7 +172,7 @@ export function readNewLines(
   agents: Map<number, AgentState>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
 ): void {
   const agent = agents.get(agentId);
   if (!agent) return;
@@ -203,13 +204,13 @@ export function readNewLines(
       cancelPermissionTimer(agentId, permissionTimers);
       if (agent.permissionSent && !agent.hookDelivered && !agent.leadAgentId) {
         agent.permissionSent = false;
-        webview?.postMessage({ type: 'agentToolPermissionClear', id: agentId });
+        sink.post({ type: 'agentToolPermissionClear', id: agentId });
       }
     }
 
     for (const line of lines) {
       if (!line.trim()) continue;
-      processTranscriptLine(agentId, line, agents, waitingTimers, permissionTimers, webview);
+      processTranscriptLine(agentId, line, agents, waitingTimers, permissionTimers, sink);
     }
   } catch (e) {
     // ENOENT is expected for hook-detected agents where the JSONL file hasn't been created yet
@@ -248,7 +249,7 @@ export function ensureProjectScan(
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
   _onAgentCreated?: (agent: AgentState) => void,
   hooksEnabledRef?: { current: boolean },
@@ -263,7 +264,7 @@ export function ensureProjectScan(
       pollingTimers,
       waitingTimers,
       permissionTimers,
-      webview,
+      sink,
       persistAgents,
     };
   }
@@ -305,7 +306,7 @@ export function ensureProjectScan(
       pollingTimers,
       waitingTimers,
       permissionTimers,
-      webview,
+      sink,
       persistAgents,
     );
 
@@ -330,7 +331,7 @@ export function ensureProjectScan(
         pollingTimers,
         waitingTimers,
         permissionTimers,
-        webview,
+        sink,
         persistAgents,
       );
     }
@@ -347,7 +348,7 @@ function scanForNewJsonlFiles(
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
   onAgentCreated?: (agent: AgentState) => void,
 ): void {
@@ -371,7 +372,8 @@ function scanForNewJsonlFiles(
     // check can find them when the idle check passes (up to 5s later).
 
     // Try to adopt the focused terminal (only if it's a Claude-named terminal)
-    const activeTerminal = vscode.window.activeTerminal;
+    const terminals = getTerminalRegistry();
+    const activeTerminal = terminals.getActive();
     if (activeTerminal && activeTerminal.name.startsWith(TERMINAL_NAME_PREFIX)) {
       let owned = false;
       for (const agent of agents.values()) {
@@ -393,14 +395,14 @@ function scanForNewJsonlFiles(
           pollingTimers,
           waitingTimers,
           permissionTimers,
-          webview,
+          sink,
           persistAgents,
         );
       } else {
         // Active terminal is owned -- scan for untracked Claude-named terminals.
         // Only adopt terminals with TERMINAL_NAME_PREFIX to avoid grabbing
         // pre-existing shells ("zsh", "bash") for /clear files.
-        for (const terminal of vscode.window.terminals) {
+        for (const terminal of terminals.list()) {
           if (!terminal.name.startsWith(TERMINAL_NAME_PREFIX)) continue;
           let owned = false;
           for (const agent of agents.values()) {
@@ -422,7 +424,7 @@ function scanForNewJsonlFiles(
               pollingTimers,
               waitingTimers,
               permissionTimers,
-              webview,
+              sink,
               persistAgents,
               onAgentCreated,
             );
@@ -450,13 +452,13 @@ function scanForNewJsonlFiles(
       cancelPermissionTimer(id, permissionTimers);
       agents.delete(id);
       persistAgents();
-      webview?.postMessage({ type: 'agentClosed', id });
+      sink.post({ type: 'agentClosed', id });
     }
   }
 }
 
 function adoptTerminalForFile(
-  terminal: vscode.Terminal,
+  terminal: TerminalLike,
   jsonlFile: string,
   projectDir: string,
   nextAgentIdRef: { current: number },
@@ -466,7 +468,7 @@ function adoptTerminalForFile(
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
   onAgentCreated?: (agent: AgentState) => void,
 ): void {
@@ -514,7 +516,7 @@ function adoptTerminalForFile(
   console.log(
     `[Pixel Agents] Watcher: Agent ${id} - adopted terminal "${terminal.name}" for ${path.basename(jsonlFile)}`,
   );
-  webview?.postMessage({ type: 'agentCreated', id });
+  sink.post({ type: 'agentCreated', id });
 
   startFileWatching(
     id,
@@ -524,9 +526,9 @@ function adoptTerminalForFile(
     pollingTimers,
     waitingTimers,
     permissionTimers,
-    webview,
+    sink,
   );
-  readNewLines(id, agents, waitingTimers, permissionTimers, webview);
+  readNewLines(id, agents, waitingTimers, permissionTimers, sink);
 }
 
 // ── Lead + Teammates support (provider-driven) ──
@@ -584,7 +586,7 @@ export function scanForTeammateFiles(
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
   onAgentCreated?: (agent: AgentState) => void,
 ): void {
@@ -653,9 +655,9 @@ export function scanForTeammateFiles(
         pollingTimers,
         waitingTimers,
         permissionTimers,
-        webview,
+        sink,
       );
-      readNewLines(existingTeammate.id, agents, waitingTimers, permissionTimers, webview);
+      readNewLines(existingTeammate.id, agents, waitingTimers, permissionTimers, sink);
       continue;
     }
 
@@ -701,7 +703,7 @@ export function scanForTeammateFiles(
       `[Pixel Agents] Teammate detected: "${teammateName}" (Agent ${id}) for parent Agent ${parentAgentId} (${path.basename(file)})`,
     );
 
-    webview?.postMessage({
+    sink.post({
       type: 'agentCreated',
       id,
       isTeammate: true,
@@ -720,9 +722,9 @@ export function scanForTeammateFiles(
       pollingTimers,
       waitingTimers,
       permissionTimers,
-      webview,
+      sink,
     );
-    readNewLines(id, agents, waitingTimers, permissionTimers, webview);
+    readNewLines(id, agents, waitingTimers, permissionTimers, sink);
   }
 }
 
@@ -777,7 +779,7 @@ export function scanAllTeammateFiles(
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
   onAgentCreated?: (agent: AgentState) => void,
 ): void {
@@ -803,7 +805,7 @@ export function scanAllTeammateFiles(
       pollingTimers,
       waitingTimers,
       permissionTimers,
-      webview,
+      sink,
       persistAgents,
       onAgentCreated,
     );
@@ -828,7 +830,7 @@ export function adoptExternalSessionFromHook(
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
   onAgentCreated?: (agent: AgentState) => void,
 ): void {
@@ -856,7 +858,7 @@ export function adoptExternalSessionFromHook(
       pollingTimers,
       waitingTimers,
       permissionTimers,
-      webview,
+      sink,
       persistAgents,
       folderName,
     );
@@ -910,7 +912,7 @@ export function adoptExternalSessionFromHook(
         `[Pixel Agents] Hook: Agent ${id} - detected hooks-only external session${folderName ? ` (${folderName})` : ''}`,
       );
     }
-    webview?.postMessage({ type: 'agentCreated', id, folderName });
+    sink.post({ type: 'agentCreated', id, folderName });
     onAgentCreated?.(agent);
   }
 }
@@ -924,7 +926,7 @@ function adoptExternalSession(
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
   folderName?: string,
 ): void {
@@ -969,7 +971,7 @@ function adoptExternalSession(
 
   // Log is emitted by the caller (adoptExternalSessionFromHook or scanExternalDir)
   // to use the correct prefix (Hook: vs Watcher:).
-  webview?.postMessage({ type: 'agentCreated', id, isExternal: true, folderName });
+  sink.post({ type: 'agentCreated', id, isExternal: true, folderName });
 
   startFileWatching(
     id,
@@ -979,9 +981,9 @@ function adoptExternalSession(
     pollingTimers,
     waitingTimers,
     permissionTimers,
-    webview,
+    sink,
   );
-  readNewLines(id, agents, waitingTimers, permissionTimers, webview);
+  readNewLines(id, agents, waitingTimers, permissionTimers, sink);
 }
 
 /**
@@ -998,7 +1000,7 @@ export function startExternalSessionScanning(
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
   _jsonlPollTimers: Map<number, ReturnType<typeof setInterval>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
   watchAllSessionsRef?: { current: boolean },
   hooksEnabledRef?: { current: boolean },
@@ -1019,7 +1021,7 @@ export function startExternalSessionScanning(
           pollingTimers,
           waitingTimers,
           permissionTimers,
-          webview,
+          sink,
           persistAgents,
         );
       }
@@ -1034,7 +1036,7 @@ export function startExternalSessionScanning(
         pollingTimers,
         waitingTimers,
         permissionTimers,
-        webview,
+        sink,
         persistAgents,
       );
     }
@@ -1051,7 +1053,7 @@ function scanExternalDir(
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
 ): void {
   let files: string[];
@@ -1168,7 +1170,7 @@ function scanExternalDir(
       pollingTimers,
       waitingTimers,
       permissionTimers,
-      webview,
+      sink,
       persistAgents,
     );
   }
@@ -1189,7 +1191,7 @@ function scanGlobalProjectDirs(
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
 ): void {
   const projectsRoot = path.join(os.homedir(), '.claude', 'projects');
@@ -1249,7 +1251,7 @@ function scanGlobalProjectDirs(
         pollingTimers,
         waitingTimers,
         permissionTimers,
-        webview,
+        sink,
         persistAgents,
         folderName,
       );
@@ -1269,7 +1271,7 @@ export function startStaleExternalAgentCheck(
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
   jsonlPollTimers: Map<number, ReturnType<typeof setInterval>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
   hooksEnabledRef?: { current: boolean },
 ): ReturnType<typeof setInterval> {
@@ -1310,7 +1312,7 @@ export function startStaleExternalAgentCheck(
         jsonlPollTimers,
         persistAgents,
       );
-      webview?.postMessage({ type: 'agentClosed', id });
+      sink.post({ type: 'agentClosed', id });
     }
   }, EXTERNAL_STALE_CHECK_INTERVAL_MS);
 }
@@ -1323,7 +1325,7 @@ export function reassignAgentToFile(
   pollingTimers: Map<number, ReturnType<typeof setInterval>>,
   waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
   permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-  webview: vscode.Webview | undefined,
+  sink: AgentEventSink,
   persistAgents: () => void,
 ): void {
   const agent = agents.get(agentId);
@@ -1341,7 +1343,7 @@ export function reassignAgentToFile(
   // Clear activity
   cancelWaitingTimer(agentId, waitingTimers);
   cancelPermissionTimer(agentId, permissionTimers);
-  clearAgentActivity(agent, agentId, permissionTimers, webview);
+  clearAgentActivity(agent, agentId, permissionTimers, sink);
 
   // Permanently dismiss old file so scanners never re-adopt it as external
   clearDismissedFiles.add(agent.jsonlFile);
@@ -1363,7 +1365,7 @@ export function reassignAgentToFile(
     pollingTimers,
     waitingTimers,
     permissionTimers,
-    webview,
+    sink,
   );
-  readNewLines(agentId, agents, waitingTimers, permissionTimers, webview);
+  readNewLines(agentId, agents, waitingTimers, permissionTimers, sink);
 }

@@ -21,6 +21,7 @@ import {
   sendExistingAgents,
   sendLayout,
 } from './agentManager.js';
+import type { AgentStateStore } from './agentRuntime.js';
 import type { LoadedAssets, LoadedCharacterSprites } from './assetLoader.js';
 import {
   loadCharacterSprites,
@@ -62,6 +63,7 @@ import {
 } from './fileWatcher.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
 import { readLayoutFromFile, watchLayoutFile, writeLayoutToFile } from './layoutPersistence.js';
+import { type AgentEventSink, sinkFromWebview } from './messageSender.js';
 import { setHookProvider } from './transcriptParser.js';
 import type { AgentState } from './types.js';
 
@@ -119,8 +121,20 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     return this.webviewView?.webview;
   }
 
+  private get sink(): AgentEventSink {
+    return sinkFromWebview(this.webview);
+  }
+
+  private get store(): AgentStateStore {
+    const ws = this.context.workspaceState;
+    return {
+      get: <T>(key: string) => ws.get<T>(key),
+      set: (key: string, value: unknown) => ws.update(key, value),
+    };
+  }
+
   private persistAgents = (): void => {
-    persistAgents(this.agents, this.context);
+    persistAgents(this.agents, this.store);
   };
 
   private initHooks(): void {
@@ -159,7 +173,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           this.pollingTimers,
           this.waitingTimers,
           this.permissionTimers,
-          this.webview,
+          this.sink,
           this.persistAgents,
           (agent) => this.registerAgentHook(agent),
         );
@@ -175,7 +189,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
             this.pollingTimers,
             this.waitingTimers,
             this.permissionTimers,
-            this.webview,
+            this.sink,
             this.persistAgents,
           );
         }
@@ -206,7 +220,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           this.pollingTimers,
           this.waitingTimers,
           this.permissionTimers,
-          this.webview,
+          this.sink,
           this.persistAgents,
           (agent) => this.registerAgentHook(agent),
         );
@@ -348,7 +362,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           this.permissionTimers,
           this.jsonlPollTimers,
           this.projectScanTimer,
-          this.webview,
+          this.sink,
           this.persistAgents,
           message.folderPath as string | undefined,
           message.bypassPermissions as boolean | undefined,
@@ -466,7 +480,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         }
       } else if (message.type === 'webviewReady') {
         restoreAgents(
-          this.context,
+          this.store,
           this.nextAgentId,
           this.nextTerminalIndex,
           this.agents,
@@ -478,7 +492,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           this.jsonlPollTimers,
           this.projectScanTimer,
           this.activeAgentId,
-          this.webview,
+          this.sink,
           this.persistAgents,
         );
         // Register all restored agents with hook handler
@@ -546,7 +560,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           this.pollingTimers,
           this.waitingTimers,
           this.permissionTimers,
-          this.webview,
+          this.sink,
           this.persistAgents,
           (agent) => this.registerAgentHook(agent),
           this.hooksEnabled,
@@ -564,7 +578,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
             this.waitingTimers,
             this.permissionTimers,
             this.jsonlPollTimers,
-            this.webview,
+            this.sink,
             this.persistAgents,
             this.watchAllSessions,
             this.hooksEnabled,
@@ -590,7 +604,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
                   this.pollingTimers,
                   this.waitingTimers,
                   this.permissionTimers,
-                  this.webview,
+                  this.sink,
                   this.persistAgents,
                   undefined,
                   this.hooksEnabled,
@@ -608,7 +622,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
             this.waitingTimers,
             this.permissionTimers,
             this.jsonlPollTimers,
-            this.webview,
+            this.sink,
             this.persistAgents,
             this.hooksEnabled,
           );
@@ -636,9 +650,9 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
             if (!assetsRoot) {
               console.log('[Extension] ⚠️  No assets directory found');
               if (this.webview) {
-                sendLayout(this.context, this.webview, this.defaultLayout);
+                sendLayout(this.store, this.sink, this.defaultLayout);
                 // Send agent statuses AFTER layoutLoaded so characters exist when messages arrive
-                sendCurrentAgentStatuses(this.agents, this.webview);
+                sendCurrentAgentStatuses(this.agents, this.sink);
                 this.startLayoutWatcher();
               }
               return;
@@ -684,13 +698,13 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           // Always send saved layout (or null for default)
           if (this.webview) {
             console.log('[Extension] Sending saved layout');
-            sendLayout(this.context, this.webview, this.defaultLayout);
+            sendLayout(this.store, this.sink, this.defaultLayout);
             // Send agent statuses AFTER layoutLoaded so characters exist when messages arrive
-            sendCurrentAgentStatuses(this.agents, this.webview);
+            sendCurrentAgentStatuses(this.agents, this.sink);
             this.startLayoutWatcher();
           }
         })();
-        sendExistingAgents(this.agents, this.context, this.webview);
+        sendExistingAgents(this.agents, this.store, this.sink);
       } else if (message.type === 'requestDiagnostics') {
         // Send connection diagnostics for all agents to the Debug View
         const diagnostics: Array<Record<string, unknown>> = [];
