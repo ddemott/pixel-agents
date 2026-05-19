@@ -1,7 +1,11 @@
+mod agents;
 mod app;
 mod caps;
+mod chrome;
 mod daemon;
+mod focus;
 mod input_queue;
+mod keymap;
 mod raw_mode;
 mod tui;
 

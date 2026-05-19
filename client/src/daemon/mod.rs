@@ -1,5 +1,5 @@
-mod wire;
-mod framing;
+pub mod wire;
+pub mod framing;
 mod connection;
 mod discovery;
 
