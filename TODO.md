@@ -2,15 +2,12 @@
 
 Active items by priority. For background and big-picture plans, see the linked docs at the bottom.
 
-## Now — Phase 1 Day 5
-
-- [ ] **Day 5** — bring Phase-0 modules into the daemon. No new source files: the daemon
-      imports `src/transcriptParser.ts` etc. across packages, backed by daemon-side impls of
-      `AgentEventSink`, `TerminalRegistry`, `AgentRuntime`, `AgentStateStore`.
-
-## Next — Phase 1 Day 6-16
+## Now — Phase 1 Day 6
 
 - [ ] **Day 6** — persistence ports (layout, config, `agents.json`) with `_writer` writer tag.
+
+## Next — Phase 1 Day 7-16
+
 - [ ] **Day 7-8** — RPC command catalog (`hello`, `helloAck` w/ inline `WorldSnapshot`,
       `agent.*`, `layout.*`, `subscribe`).
 - [ ] **Day 9-10** — daemon-side `AgentEventSink` bus (broadcast over UDS, backpressure).
@@ -50,6 +47,7 @@ From `docs/tui-architecture.md` §23 — kept around because we'll need telemetr
 
 ## Recently done
 
+- ✅ Phase 1 Day 5 — Phase-0 modules wired into daemon: cross-package tsconfig include for `src/{messageSender,terminalRegistry,agentRuntime,types,timerManager,transcriptParser}.ts`, `BroadcastSink` (`AgentEventSink` impl fanning out over UDS w/ per-topic monotonic seq), `DaemonRuntime` (`AgentRuntime` from boot cwd), `FileStateStore` (`AgentStateStore` backed by `agents.json` w/ atomic tmp+rename). `onAuthenticated` callback on RPC connection registers sock with sink. Build emits a `dist/src/package.json {"type":"commonjs"}` scope override so Node 22 ESM can interop with the Phase-0 CJS modules. 9 new Vitest cases (170/170 total).
 - ✅ Phase 1 Day 3-4 — RPC framing on UDS: channel mux (`framing.ts`), `wire.ts` types, `connection.ts` handler with token auth + `helloAck` w/ inline (stub) `WorldSnapshot`. 21 Vitest cases.
 - ✅ Phase 1 Day 2 — port `server/` → `daemon/src/hooks/` + discovery chain + esbuild fix (`47c2288`, `b7ef2f3`, `08f5064`)
 - ✅ Phase 1 Day 1 — daemon scaffold + `config.json` read (`ab77a32`, `764da25`)

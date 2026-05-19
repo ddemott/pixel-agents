@@ -3,14 +3,14 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "main": "dist/server.js",
+  "main": "dist/daemon/src/server.js",
   "bin": {
-    "pixel-agents-daemon": "dist/server.js"
+    "pixel-agents-daemon": "dist/daemon/src/server.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').writeFileSync('dist/src/package.json', JSON.stringify({type:'commonjs'}))\"",
     "dev": "tsc -p tsconfig.json --watch",
-    "start": "node dist/server.js",
+    "start": "node dist/daemon/src/server.js",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest"

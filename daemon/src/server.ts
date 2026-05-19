@@ -3,6 +3,10 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as net from 'net';
 
+import { setAgentRuntime } from '../../src/agentRuntime.js';
+import { BroadcastSink } from './agents/broadcastSink.js';
+import { DaemonRuntime } from './agents/daemonRuntime.js';
+import { FileStateStore } from './agents/fileStateStore.js';
 import { readConfig } from './config.js';
 import {
   clearDiscoveryIfOwned,
@@ -12,7 +16,7 @@ import {
   readDiscovery,
   writeDiscovery,
 } from './discovery.js';
-import { DAEMON_SOCKET_PATH } from './paths.js';
+import { AGENTS_JSON_PATH, DAEMON_SOCKET_PATH } from './paths.js';
 import { attachConnection } from './rpc/connection.js';
 import type { WorldSnapshot } from './rpc/wire.js';
 
@@ -115,6 +119,17 @@ async function main(): Promise<void> {
 
   writeDiscovery(discovery);
 
+  // Wire Phase-0 modules: BroadcastSink fans events out to all authed clients;
+  // DaemonRuntime supplies the cwd as a workspace folder; FileStateStore backs
+  // the eventual agents.json registry. TerminalRegistry stays Null until
+  // node-pty hosting lands in Day 13-14.
+  const sink = new BroadcastSink();
+  const stateStore = new FileStateStore(AGENTS_JSON_PATH);
+  setAgentRuntime(new DaemonRuntime(process.cwd()));
+  // The state store is held here so future commands (Day 7-8) can reach it;
+  // mark it `void` to keep noUnusedLocals satisfied without erasing the binding.
+  void stateStore;
+
   const buildWorldSnapshot = (): WorldSnapshot => ({
     schemaVersion: 1,
     worldSeed: 0,
@@ -129,6 +144,9 @@ async function main(): Promise<void> {
       bootId: discovery.bootId,
       daemonVersion: DAEMON_VERSION,
       buildWorldSnapshot,
+      onAuthenticated: (authed) => {
+        sink.register(authed);
+      },
     });
   });
 

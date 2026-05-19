@@ -34,7 +34,11 @@ daemon/                       — Standalone daemon (TUI port Phase 1; ESM, Node
     rpc/
       framing.ts              — Channel-mux encoder/decoder (arch §10): 0x00 NDJSON (256 KB cap), 0x01/0x03 PTY (1 MB cap), 0x02 asset blob (chunked, high-bit-of-tier EOF). FrameDecoder is streaming.
       wire.ts                 — NDJSON envelope types (Req/Res/Evt/Hello/HelloAck), ClientCapabilities, stub WorldSnapshot. protoVersion = 1.
-      connection.ts           — Per-socket handler: enforce hello-first, timing-safe token compare, send helloAck with inline WorldSnapshot, dispatch placeholder for unknown methods (real catalog lands Day 7-8).
+      connection.ts           — Per-socket handler: enforce hello-first, timing-safe token compare, send helloAck with inline WorldSnapshot, dispatch placeholder for unknown methods (real catalog lands Day 7-8). `onAuthenticated(sock)` callback for sink registration.
+    agents/
+      broadcastSink.ts        — AgentEventSink impl. Fans `post(event)` out to every registered RPC socket as `{kind:'evt', topic, seq, ts, data}` with per-topic monotonic seq. Skips destroyed/unwritable sockets; auto-unregisters on `close`.
+      daemonRuntime.ts        — AgentRuntime impl. Single workspace folder = daemon's boot cwd. Multi-folder support arrives once `agent.spawn { cwd }` lands (Day 7-8).
+      fileStateStore.ts       — AgentStateStore backed by `~/.pixel-agents/agents.json`. Atomic tmp+rename writes; malformed file starts empty (Day 6 will add migration + backup).
     hooks/                    — Ported from former server/src/ (CJS subtree via package.json type:commonjs)
       package.json            — {"type": "commonjs"} — scopes hooks/ to CJS so the VS Code extension can import without ESM interop
       httpServer.ts           — HTTP hook server (was server.ts); endpoint, auth, server.json discovery
@@ -53,6 +57,7 @@ daemon/                       — Standalone daemon (TUI port Phase 1; ESM, Node
           hooks/
             claudeHookSrc.ts  — Bundled hook script source (was claude-hook.ts). Reads stdin, discovers target via env→daemon.json→server.json, POSTs JSON
   __tests__/rpc/              — Vitest: framing roundtrip + fuzz; connection handshake/auth/proto-mismatch
+  __tests__/agents/           — Vitest: BroadcastSink fan-out + per-topic seq; FileStateStore atomic write + malformed-file recovery
   __tests__/hooks/            — Vitest suite (was server/__tests__/)
     httpServer.test.ts        — HTTP server lifecycle, auth, hooks, server.json
     eventHandler.test.ts      — Event routing, buffering, timer cancellation
@@ -239,7 +244,7 @@ npm install && cd webview-ui && npm install && cd ../daemon && npm install && cd
 
 Build: type-check → lint → esbuild (extension + hook bundle) → vite (webview). F5 for Extension Dev Host.
 
-Daemon build (TUI port Phase 1): `cd daemon && npm run build` produces `daemon/dist/server.js`. Run with `node daemon/dist/server.js --foreground`.
+Daemon build (TUI port Phase 1): `cd daemon && npm run build` produces `daemon/dist/daemon/src/server.js` (post-build step also writes `dist/src/package.json {"type":"commonjs"}` so Node 22 ESM can interop with the cross-imported CJS Phase-0 modules under `dist/src/`). Run with `node daemon/dist/daemon/src/server.js --foreground` or `npm start` from `daemon/`.
 
 Testing:
 

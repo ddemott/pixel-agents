@@ -24,6 +24,9 @@ export interface ConnectionContext {
   buildWorldSnapshot: () => WorldSnapshot;
   /** Build a fresh per-connection sessionId. */
   newSessionId?: () => string;
+  /** Notified after a successful hello so the caller can register the socket
+   *  with the broadcast bus, etc. (Day 5+). */
+  onAuthenticated?: (sock: Socket) => void;
 }
 
 interface ConnectionState {
@@ -158,6 +161,7 @@ function handleHello(
     world: ctx.buildWorldSnapshot(),
   };
   sock.write(encodeNdjson(ack));
+  ctx.onAuthenticated?.(sock);
 }
 
 function sendRes(sock: Socket, res: Res): void {
