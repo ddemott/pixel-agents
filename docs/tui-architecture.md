@@ -2,7 +2,9 @@
 
 > **Revision:** v3. Supersedes v2 by surgical edit, not rewrite — the architecture is unchanged. Every Critical, Major, and Minor item from `docs/critique-r2.md` (NEW-CRIT-1, NEW-MAJ-1..6, NEW-MIN-1..7) is addressed in-place; each fix is annotated with its critique ID. The full v1→v2 deltas live at `docs/changes-r1-to-r2.md`; v2→v3 deltas at `docs/changes-r2-to-r3.md`.
 >
-> **Status:** every MVP item in `docs/tui-parity-checklist.md` is **✓** in §22; the only ⚠ items are Full-tier where the limitation is explicit and product-acceptable.
+> **Status (design):** every MVP item in `docs/tui-parity-checklist.md` is **✓** in §22; the only ⚠ items are Full-tier where the limitation is explicit and product-acceptable.
+>
+> **Status (build):** this document was authored before any code shipped and references `server/src/...` paths from the pre-Phase-0 layout. For the current build state, file layout, and which phases have shipped, see `docs/tui-implementation-plan.md`. The `server/` directory referenced throughout this doc is now `daemon/src/hooks/` post Phase 1 Day 2.
 
 ---
 

@@ -59,13 +59,14 @@ Vite will print a local URL (typically `http://localhost:5173`) where the mocked
 
 ### Project Structure
 
-| Directory     | Description                                                     |
-| ------------- | --------------------------------------------------------------- |
-| `src/`        | Extension backend -- Node.js, VS Code API                       |
-| `server/`     | Standalone HTTP server, hook installer, and test suite (Vitest) |
-| `webview-ui/` | React + TypeScript frontend (separate Vite project)             |
-| `scripts/`    | Asset extraction and generation tooling                         |
-| `assets/`     | Bundled sprites, catalog, and default layout                    |
+| Directory     | Description                                                                            |
+| ------------- | -------------------------------------------------------------------------------------- |
+| `src/`        | Extension backend -- Node.js, VS Code API                                              |
+| `daemon/`     | Standalone daemon (TUI port): hook HTTP server, hook installer, test suite (Vitest)    |
+| `webview-ui/` | React + TypeScript frontend (separate Vite project)                                    |
+| `scripts/`    | Asset extraction and generation tooling                                                |
+| `assets/`     | Bundled sprites, catalog, and default layout                                           |
+| `docs/`       | TUI port architecture + implementation plan + parity checklist + external-assets guide |
 
 ## Code Guidelines
 
