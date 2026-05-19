@@ -5,6 +5,7 @@ import * as path from 'path';
 import type { DaemonHookBridge } from '../hookHost/bridge.js';
 import type { Logger } from '../logging/logger.js';
 import type { BroadcastSink } from './broadcastSink.js';
+import type { JsonlPoller } from './jsonlPoller.js';
 import type { LiveAgents } from './liveAgents.js';
 import { PtyHost, type SpawnFn } from './ptyHost.js';
 import type { AgentsRegistry, PersistedAgent } from './registry.js';
@@ -25,6 +26,8 @@ export interface ReviveContext {
   sink: BroadcastSink;
   hookBridge: DaemonHookBridge;
   logger: Logger;
+  /** JSONL poller — started after revival health check passes. */
+  jsonlPoller?: JsonlPoller;
   /** Test seam: override the PTY spawn function used by PtyHost. */
   spawnOverride?: SpawnFn;
   /** Test seam: override the 3 s health timeout (default: 3000). */
@@ -83,8 +86,8 @@ async function reviveOne(
   // ── JSONL liveness gate ──────────────────────────────────────────────────
   const jPath = resolveJsonlPath(cwd, entry.sessionId);
   if (!fs.existsSync(jPath)) throw new Error('jsonl missing');
-  const mtime = fs.statSync(jPath).mtimeMs;
-  if (Date.now() - mtime > SESSION_STALE_MS) throw new Error('jsonl stale (>30 days)');
+  const jStat = fs.statSync(jPath);
+  if (Date.now() - jStat.mtimeMs > SESSION_STALE_MS) throw new Error('jsonl stale (>30 days)');
 
   // Reserve the id before spawning so allocateId() never collides with it.
   ctx.liveAgents.reserveId(entry.id);
@@ -118,6 +121,7 @@ async function reviveOne(
         onExit: (exitCode, signal) => {
           notifyExit({ exitCode, signal });
           ctx.liveAgents.remove(entry.id);
+          ctx.jsonlPoller?.stop(entry.id);
           ctx.sink.emitTo(entry.id, {
             type: 'agent.exited',
             id: entry.id,
@@ -154,6 +158,8 @@ async function reviveOne(
   if (winner === null) {
     // Survived the health window — session is live.
     ctx.agents.upsert(cwd, { ...entry, lastSeenAt: Date.now() });
+    // Seed offset to current file size so we skip replaying full prior history.
+    ctx.jsonlPoller?.start(entry.id, entry.sessionId, cwd, jPath, jStat.size);
     ctx.sink.emitTo(entry.id, {
       type: 'agent.created',
       id: entry.id,

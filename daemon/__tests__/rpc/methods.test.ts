@@ -48,6 +48,17 @@ async function makeCtx(): Promise<{
     sink,
     agents,
     layoutDebouncer: new LayoutSaveDebouncer(OURS, 10),
+    liveAgents: { get: () => undefined, list: () => [] } as never,
+    hookBridge: { registerSession: () => {}, dropSession: () => {} } as never,
+    logger: {
+      trace: () => {},
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      setLevel: () => {},
+      close: () => {},
+    },
     state: {
       layout: null,
       config: { externalAssetDirectories: [], logLevel: 'info' } as PixelAgentsConfig,
@@ -199,19 +210,43 @@ describe('agent methods', () => {
     if (res.ok) expect((res.data as { agents: PersistedAgent[] }).agents).toHaveLength(1);
   });
 
-  it.each([
-    'agent.spawn',
-    'agent.close',
-    'agent.focus',
-    'pty.input',
-    'pty.resize',
-    'assets.list',
-    'hooks.toggle',
-  ])('%s is gated as not_yet_supported', async (method) => {
+  // Day 13-14 lit up agent.spawn/close + pty.input/resize. agent.focus and the
+  // rest still wait for later phases.
+  it.each(['agent.focus', 'agent.reassignSeat', 'agent.adopt', 'assets.list', 'hooks.toggle'])(
+    '%s is gated as not_yet_supported',
+    async (method) => {
+      const { ctx, registry } = await makeCtx();
+      const res = await registry.dispatch(1, method, {}, makeScope(), ctx);
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error.code).toBe('not_yet_supported');
+    },
+  );
+
+  it('agent.close returns not_found for unknown id (no live PTY)', async () => {
     const { ctx, registry } = await makeCtx();
-    const res = await registry.dispatch(1, method, {}, makeScope(), ctx);
+    const res = await registry.dispatch(1, 'agent.close', { id: 999 }, makeScope(), ctx);
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error.code).toBe('not_yet_supported');
+    if (!res.ok) expect(res.error.code).toBe('not_found');
+  });
+
+  it('pty.input rejects malformed params', async () => {
+    const { ctx, registry } = await makeCtx();
+    const res = await registry.dispatch(1, 'pty.input', { id: 1 }, makeScope(), ctx);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('bad_params');
+  });
+
+  it('pty.resize rejects non-positive cols/rows', async () => {
+    const { ctx, registry } = await makeCtx();
+    const res = await registry.dispatch(
+      1,
+      'pty.resize',
+      { id: 1, cols: 0, rows: 24 },
+      makeScope(),
+      ctx,
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('bad_params');
   });
 });
 

@@ -31,6 +31,17 @@ function emptyDispatchContext(): DispatchContext {
     sink: { post: () => {}, register: () => 0, unregister: () => {}, size: () => 0 } as never,
     agents: { forCwd: () => [] } as never,
     layoutDebouncer: { schedule: () => {}, flushNow: () => {}, dispose: () => {} } as never,
+    liveAgents: { get: () => undefined, list: () => [] } as never,
+    hookBridge: { registerSession: () => {}, dropSession: () => {} } as never,
+    logger: {
+      trace: () => {},
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      setLevel: () => {},
+      close: () => {},
+    },
     state: { layout: null, config: { externalAssetDirectories: [], logLevel: 'info' } },
     triggerShutdown: () => {},
   };

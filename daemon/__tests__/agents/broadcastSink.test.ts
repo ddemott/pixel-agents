@@ -212,6 +212,37 @@ describe('BroadcastSink', () => {
       expect(sock.topics()).toHaveLength(1 + SUBSCRIBER_QUEUE_MAX);
     });
 
+    it('broadcastPty ships a 0x01 frame to subscribers of that agent', () => {
+      const sink = new BroadcastSink();
+      const a = new MockSocket();
+      const b = new MockSocket();
+      const c = new MockSocket();
+      sink.register(asMock(a), new Set(['agent:7']));
+      sink.register(asMock(b), new Set(['agent:9']));
+      sink.register(asMock(c)); // unfiltered → receives everything
+
+      sink.broadcastPty(7, Buffer.from('hello'));
+
+      const decoded = a.decode().filter((f) => f.kind === 'ptyOut');
+      expect(decoded).toHaveLength(1);
+      if (decoded[0].kind === 'ptyOut') {
+        expect(decoded[0].streamId).toBe(7);
+        expect(decoded[0].bytes.toString('utf-8')).toBe('hello');
+      }
+      // Wrong-agent subscriber gets nothing.
+      expect(b.decode()).toEqual([]);
+      // Unfiltered subscriber gets a copy.
+      expect(c.decode().some((f) => f.kind === 'ptyOut')).toBe(true);
+    });
+
+    it('broadcastPty does nothing on zero-length input', () => {
+      const sink = new BroadcastSink();
+      const sock = new MockSocket();
+      sink.register(asMock(sock));
+      sink.broadcastPty(1, Buffer.alloc(0));
+      expect(sock.chunks).toEqual([]);
+    });
+
     it('discards the queue if the socket dies during flush', () => {
       const sink = new BroadcastSink();
       const sock = new MockSocket();

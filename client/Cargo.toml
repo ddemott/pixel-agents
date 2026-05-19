@@ -1,0 +1,53 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
+[package]
+name = "pixel-agents-tui"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "pa-tui"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# TUI
+ratatui = "0.30"
+ratatui-crossterm = "0.1"
+crossterm = "0.29"
+
+# Framing / protocol
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# VTE parser (terminal sequence handling — capability probes, PTY output Phase 3)
+vte = "0.15"
+
+# Animated TUI effects (spawn/despawn matrix rain, transitions)
+tachyonfx = "0.25"
+
+# Clipboard (future: copy terminal output)
+arboard = "3"
+
+# Platform dirs (locate ~/.pixel-agents/daemon.json)
+directories = "6"
+
+# Image decoding (sixel / kitty pixel protocol, Phase 3)
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Error handling
+anyhow = "1"
+
+# wezterm-term — NOT on crates.io, deferred to Phase 3
+# wezterm-term = "..."
+
+[profile.release]
+strip = "symbols"
+opt-level = 3
+lto = true
+codegen-units = 1

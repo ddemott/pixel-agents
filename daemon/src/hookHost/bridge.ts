@@ -21,11 +21,18 @@ export class DaemonHookBridge {
   private nextAgentId = 1;
   /** Per-agent stack of active toolIds so a bare PostToolUse can be paired. */
   private readonly toolStack = new Map<number, string[]>();
+  private hookDeliveredCb: ((agentId: number) => void) | null = null;
 
   constructor(
     private readonly sink: AgentEventSink,
     private readonly logger: Logger,
   ) {}
+
+  /** Register a callback invoked whenever a hook event is successfully
+   *  dispatched to a known agent. Used by JsonlPoller to set hookDelivered. */
+  setHookDeliveredCallback(cb: (agentId: number) => void): void {
+    this.hookDeliveredCb = cb;
+  }
 
   /** Look up the agent id for a known session, or `undefined` if unregistered. */
   agentIdForSession(sessionId: string): number | undefined {
@@ -36,6 +43,14 @@ export class DaemonHookBridge {
   registerSession(sessionId: string, agentId: number): void {
     this.sessionToAgentId.set(sessionId, agentId);
     if (agentId >= this.nextAgentId) this.nextAgentId = agentId + 1;
+  }
+
+  /** Drop a session mapping (e.g. when `agent.spawn` fails after pre-registration). */
+  dropSession(sessionId: string): void {
+    const agentId = this.sessionToAgentId.get(sessionId);
+    if (agentId === undefined) return;
+    this.sessionToAgentId.delete(sessionId);
+    this.toolStack.delete(agentId);
   }
 
   /** Entry point invoked by the hook HTTP server. */
@@ -117,6 +132,7 @@ export class DaemonHookBridge {
       this.sessionToAgentId.delete(sessionId);
       this.toolStack.delete(agentId);
     }
+    this.notifyHookDelivered(agentId);
     this.emit(agentId, { type: 'agent.exited', id: agentId, reason });
   }
 
@@ -130,6 +146,7 @@ export class DaemonHookBridge {
         : {};
     const toolId = `hook-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     this.pushTool(agentId, toolId);
+    this.notifyHookDelivered(agentId);
     this.emit(agentId, {
       type: 'agent.toolStart',
       id: agentId,
@@ -149,6 +166,7 @@ export class DaemonHookBridge {
     if (agentId === undefined) return;
     const toolId = this.popTool(agentId);
     if (!toolId) return;
+    this.notifyHookDelivered(agentId);
     this.emit(agentId, { type: 'agent.toolDone', id: agentId, toolId });
   }
 
@@ -158,11 +176,16 @@ export class DaemonHookBridge {
   ): void {
     const agentId = this.sessionToAgentId.get(sessionId);
     if (agentId === undefined) return;
+    this.notifyHookDelivered(agentId);
     this.emit(agentId, { type: 'agent.statusChanged', id: agentId, status });
   }
 
   private emit(agentId: number, event: AgentEvent): void {
     this.sink.emitTo(agentId, event);
+  }
+
+  private notifyHookDelivered(agentId: number): void {
+    this.hookDeliveredCb?.(agentId);
   }
 
   private pushTool(agentId: number, toolId: string): void {

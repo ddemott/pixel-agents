@@ -7,6 +7,7 @@ import { setAgentRuntime } from '../../src/agentRuntime.js';
 import { BroadcastSink } from './agents/broadcastSink.js';
 import { DaemonRuntime } from './agents/daemonRuntime.js';
 import { FileStateStore } from './agents/fileStateStore.js';
+import { JsonlPoller } from './agents/jsonlPoller.js';
 import { LiveAgents } from './agents/liveAgents.js';
 import { AgentsRegistry } from './agents/registry.js';
 import { reviveAgentsOnBoot } from './agents/resume.js';
@@ -30,6 +31,7 @@ import { attachConnection } from './rpc/connection.js';
 import type { DispatchContext } from './rpc/dispatch.js';
 import { buildMethodRegistry } from './rpc/methods/index.js';
 import type { WorldSnapshot } from './rpc/wire.js';
+import { installSupervisor } from './supervisor.js';
 
 const DAEMON_VERSION = '0.0.1';
 const BOOT_TIMEOUT_MS = 3000;
@@ -39,11 +41,13 @@ const LOG_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 interface BootOptions {
   foreground: boolean;
+  installSupervisor: boolean;
 }
 
 function parseArgs(argv: string[]): BootOptions {
   return {
     foreground: argv.includes('--foreground') || argv.includes('-f'),
+    installSupervisor: argv.includes('--install-supervisor'),
   };
 }
 
@@ -93,6 +97,20 @@ async function bindSocket(): Promise<net.Server> {
 
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
+
+  if (opts.installSupervisor) {
+    try {
+      const result = installSupervisor();
+      const verb = result.alreadyExisted ? 'Updated' : 'Installed';
+      console.log(`${verb}: ${result.configPath}`);
+      console.log(`Activate with:\n  ${result.activateCommand}`);
+    } catch (e) {
+      console.error('install-supervisor failed:', e instanceof Error ? e.message : String(e));
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
   const startedAt = Date.now();
 
   ensurePixelAgentsDir();
@@ -173,6 +191,7 @@ async function main(): Promise<void> {
   // time. Boot order: sink → bridge → http server → republish daemon.json
   // with the bound port so hook scripts can find us.
   const hookBridge = new DaemonHookBridge(sink, logger);
+  hookBridge.setHookDeliveredCallback((id) => jsonlPoller.markHookDelivered(id));
   const hookHandle: HookHTTPServerHandle = await startHookServer({
     token: discovery.token,
     onEvent: (providerId, event) => hookBridge.handleEvent(providerId, event),
@@ -229,6 +248,7 @@ async function main(): Promise<void> {
   const layoutDebouncer = new LayoutSaveDebouncer(ours);
   const registry = buildMethodRegistry();
   const liveAgents = new LiveAgents();
+  const jsonlPoller = new JsonlPoller(sink, logger);
 
   // Forward-declared so `daemon.shutdown` (registered before this assignment
   // resolves) can call into the shutdown handler defined below.
@@ -240,6 +260,7 @@ async function main(): Promise<void> {
     layoutDebouncer,
     liveAgents,
     hookBridge,
+    jsonlPoller,
     logger,
     state: sharedState,
     triggerShutdown: () => shutdown('rpc'),
@@ -281,12 +302,14 @@ async function main(): Promise<void> {
   // Revive persisted agents in the background. Clients that connect during
   // revival will receive `agent.created { isResumed: true }` events as each
   // agent passes its 3 s health check.
-  void reviveAgentsOnBoot({ agents, liveAgents, sink, hookBridge, logger }).catch((e) => {
-    logger.error(
-      { module: 'resume', error: e instanceof Error ? e.message : String(e) },
-      'reviveAgentsOnBoot threw unexpectedly',
-    );
-  });
+  void reviveAgentsOnBoot({ agents, liveAgents, sink, hookBridge, jsonlPoller, logger }).catch(
+    (e) => {
+      logger.error(
+        { module: 'resume', error: e instanceof Error ? e.message : String(e) },
+        'reviveAgentsOnBoot threw unexpectedly',
+      );
+    },
+  );
 
   let shuttingDown = false;
   shutdown = (signal: string): void => {
@@ -301,6 +324,7 @@ async function main(): Promise<void> {
     // the per-agent KILL_GRACE inside agent.close handles escalation when the
     // shutdown is RPC-triggered. On signal shutdown we lean on the daemon's
     // own 2s hard-kill timer below.
+    jsonlPoller.stopAll();
     for (const live of liveAgents.list()) live.pty.kill('SIGTERM');
     void hookHandle.close();
     server.close(() => {

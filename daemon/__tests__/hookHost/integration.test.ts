@@ -93,6 +93,9 @@ function makeDispatchContext(): DispatchContext {
     sink,
     agents: { forCwd: () => [] } as never,
     layoutDebouncer: { schedule: () => {}, flushNow: () => {}, dispose: () => {} } as never,
+    liveAgents: { get: () => undefined, list: () => [] } as never,
+    hookBridge: bridge,
+    logger: createNullLogger(),
     state: { layout: null, config: { externalAssetDirectories: [], logLevel: 'info' } },
     triggerShutdown: () => {},
   };

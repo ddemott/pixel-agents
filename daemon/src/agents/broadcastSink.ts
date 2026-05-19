@@ -2,7 +2,7 @@ import type { Socket } from 'net';
 
 import type { AgentEvent, AgentEventSink } from '../../../src/messageSender.js';
 import { createNullLogger, type Logger } from '../logging/logger.js';
-import { encodeNdjson, FramingError } from '../rpc/framing.js';
+import { encodeNdjson, encodePtyOut, FramingError } from '../rpc/framing.js';
 import type { Evt } from '../rpc/wire.js';
 
 /**
@@ -129,6 +129,40 @@ export class BroadcastSink implements AgentEventSink {
       if (!matchesTopic(sub.subscriptions, event.type)) continue;
       if (!matchesAgent(sub.subscriptions, agentId)) continue;
       this.writeTo(sub, frame);
+    }
+  }
+
+  /**
+   * Broadcast raw PTY bytes for `agentId` over the binary multiplex (tag 0x01).
+   * Uses the same per-conn subscription filter as `emitTo`: only sockets that
+   * opted into `agent:<id>`, `agent:*`, `*`, or an unfiltered set receive the
+   * frame. Splits oversized payloads at the framing cap to keep PTY data
+   * flowing — node-pty already chunks output but very long lines after a
+   * paste can exceed 1 MB.
+   */
+  broadcastPty(agentId: number, bytes: Buffer): void {
+    if (bytes.length === 0) return;
+    for (const sub of this.conns.values()) {
+      if (!matchesAgent(sub.subscriptions, agentId)) continue;
+      this.writeTo(sub, this.encodePty(agentId, bytes));
+    }
+  }
+
+  private encodePty(streamId: number, bytes: Buffer): Buffer {
+    try {
+      return encodePtyOut(streamId, bytes);
+    } catch (e) {
+      if (e instanceof FramingError) {
+        // Re-frame in 1 MB chunks. The PTY mux is byte-stream — receivers
+        // reassemble by streamId so splitting is safe.
+        const CHUNK = 1024 * 1024;
+        const out: Buffer[] = [];
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+          out.push(encodePtyOut(streamId, bytes.subarray(i, i + CHUNK)));
+        }
+        return Buffer.concat(out);
+      }
+      throw e;
     }
   }
 

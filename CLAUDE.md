@@ -126,6 +126,16 @@ webview-ui/src/               — React + TypeScript (Vite)
       OfficeCanvas.tsx        — Canvas, resize, DPR, mouse hit-testing, edit interactions, drag-to-move
       ToolOverlay.tsx          — Activity status label above hovered/selected character + close button
 
+client/                       — Rust TUI client (TUI port Phase 2+; Rust 1.95+, Cargo workspace)
+  Cargo.toml                  — workspace + package; pins: ratatui 0.30, ratatui-crossterm 0.1, crossterm 0.29, tokio 1, serde/serde_json 1, bytes 1, vte 0.15, tachyonfx 0.25, arboard 3, directories 6, image 0.25, anyhow 1
+  src/
+    main.rs                   — Entry: tokio::main → daemon::connect()
+    daemon/
+      mod.rs                  — Re-exports connect()
+      wire.rs                 — Wire types mirroring daemon/src/rpc/wire.ts: Hello, HelloAck, ClientCapabilities, CellPx, RenderingCap, Req, Res, WireError, Evt, Fatal, Inbound (internally-tagged serde enum, tag="kind")
+      discovery.rs            — Reads ~/.pixel-agents/daemon.json; DaemonDiscovery struct
+      connection.rs           — UDS connect (tokio::net::UnixStream), NDJSON framing ([0x00][json][0x0a]), hello/helloAck handshake + bootId pinning
+
 scripts/                      — 7-stage asset extraction pipeline
   0-import-tileset.ts         — Interactive CLI wrapper
   1-detect-assets.ts          — Flood-fill asset detection

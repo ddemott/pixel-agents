@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 
 import { PtyHost } from '../../agents/ptyHost.js';
 import type { PersistedAgent } from '../../agents/registry.js';
-import { classifyExit } from '../../agents/resume.js';
+import { classifyExit, resolveJsonlPath } from '../../agents/resume.js';
 import { err, type Handler, type MethodRegistry, ok } from '../dispatch.js';
 
 const DEFAULT_COLS = 120;
@@ -131,6 +131,7 @@ export function registerAgentMethods(reg: MethodRegistry): void {
           onData: (bytes) => ctx.sink.broadcastPty(agentId, bytes),
           onExit: (exitCode, signal) => {
             ctx.liveAgents.remove(agentId);
+            ctx.jsonlPoller?.stop(agentId);
             const reason = classifyExit(exitCode, signal);
             ctx.sink.emitTo(agentId, {
               type: 'agent.exited',
@@ -164,6 +165,9 @@ export function registerAgentMethods(reg: MethodRegistry): void {
       pty,
     });
 
+    // Start JSONL polling. Seed offset at 0 — the file doesn't exist yet.
+    ctx.jsonlPoller?.start(agentId, sessionId, cwd, resolveJsonlPath(cwd, sessionId), 0);
+
     const persisted: PersistedAgent = {
       id: agentId,
       sessionId,
@@ -192,6 +196,7 @@ export function registerAgentMethods(reg: MethodRegistry): void {
     const live = ctx.liveAgents.get(params.id);
     if (!live) return err('not_found', `no live agent with id ${params.id}`);
 
+    ctx.jsonlPoller?.stop(params.id);
     live.pty.kill('SIGTERM');
     // Escalate to SIGKILL if the child hasn't exited within the grace window.
     const escalate = setTimeout(() => {

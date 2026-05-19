@@ -1,9 +1,13 @@
 import type { Socket } from 'net';
 
 import type { BroadcastSink } from '../agents/broadcastSink.js';
+import type { JsonlPoller } from '../agents/jsonlPoller.js';
+import type { LiveAgents } from '../agents/liveAgents.js';
 import type { AgentsRegistry } from '../agents/registry.js';
 import type { PixelAgentsConfig } from '../config/persistence.js';
+import type { DaemonHookBridge } from '../hookHost/bridge.js';
 import type { Layout, LayoutSaveDebouncer } from '../layout/persistence.js';
+import type { Logger } from '../logging/logger.js';
 import type { WriterTag } from '../persistence/writerTag.js';
 import type { Res, WireError } from './wire.js';
 
@@ -32,6 +36,15 @@ export interface DispatchContext {
   sink: BroadcastSink;
   agents: AgentsRegistry;
   layoutDebouncer: LayoutSaveDebouncer;
+  /** Live PTY-backed agents. Day 13-14 introduces this; older handlers ignore it. */
+  liveAgents: LiveAgents;
+  /** Hook event bridge. `agent.spawn` pre-registers session→agentId so the
+   *  inbound SessionStart hook reuses the same id. */
+  hookBridge: DaemonHookBridge;
+  /** JSONL transcript poller. Started on spawn/revival; stopped on exit. */
+  jsonlPoller?: JsonlPoller;
+  /** Structured logger for handler-internal events. */
+  logger: Logger;
   /** Mutable refs the server.ts boot wires up so handlers always see fresh state. */
   state: {
     layout: Layout | null;

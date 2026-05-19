@@ -8,7 +8,7 @@
     "pixel-agents-daemon": "dist/daemon/src/server.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node -e \"require('fs').writeFileSync('dist/src/package.json', JSON.stringify({type:'commonjs'}))\"",
+    "build": "tsc -p tsconfig.json && node -e \"const fs=require('fs'); fs.writeFileSync('dist/src/package.json', JSON.stringify({type:'commonjs'})); fs.mkdirSync('dist/daemon/src/hooks',{recursive:true}); fs.writeFileSync('dist/daemon/src/hooks/package.json', JSON.stringify({type:'commonjs'}));\"",
     "dev": "tsc -p tsconfig.json --watch",
     "start": "node dist/daemon/src/server.js",
     "clean": "rm -rf dist",
@@ -22,5 +22,8 @@
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0",
     "vitest": "^3.2.1"
+  },
+  "dependencies": {
+    "node-pty": "^1.2.0-beta.13"
   }
 }

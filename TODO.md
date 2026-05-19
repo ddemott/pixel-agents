@@ -4,16 +4,13 @@ Active items by priority. For background and big-picture plans, see the linked d
 
 ## Now — Phase 2
 
-- [ ] JSONL polling port (deferred from Day 13-14). Watch `~/.claude/projects/<hash>/<sessionId>.jsonl`
-      per live agent, parse tool_use / tool_result, emit `agent.toolStart` / `agent.toolDone`
-      events that complement the hook bridge.
-
-## Next
-
-- [ ] Daemon supervisor integration (systemd/launchd/Scheduled Task per arch §17).
+- [ ] Phase 2 Rust TUI client — remaining: framing decoder (tag-byte dispatch, Day 3-4), capability detection (DA1/Kitty/iTerm2 probes + 150ms timeout, Day 5-6), pre-app input queue (Day 7), event loop skeleton (Day 8), focus FSM (Day 9), Ratatui chrome (Day 10), agent.list + agent.spawn (Day 11-12), reconnect + supervisor handoff (Day 13-14).
 
 ## Recently done
 
+- ✅ Phase 2 Day 1-2 — Rust TUI client scaffold + UDS handshake. `client/` Cargo workspace (`pa-tui` bin): `ratatui 0.30`, `ratatui-crossterm 0.1`, `crossterm 0.29`, `tokio 1`, `serde`/`serde_json 1`, `bytes 1`, `vte 0.15`, `tachyonfx 0.25`, `arboard 3`, `directories 6`, `image 0.25`, `anyhow 1`. Module tree: `daemon/{mod,wire,discovery,connection}.rs`. `wire.rs` ports all TypeScript types (`Hello`+`ClientCapabilities`+`HelloAck`+`Req`+`Res`+`Evt`+`Fatal`+`Inbound`) with correct serde `tag="kind"` internally-tagged enum. `discovery.rs` reads `~/.pixel-agents/daemon.json` via `directories`. `connection.rs` connects via `tokio::net::UnixStream`, sends `Hello` as NDJSON frame (`[0x00][json][0x0a]`), parses `HelloAck` with bootId pinning. Smoke-tested: `cargo run` against live daemon → `connected: daemon 0.0.1 boot=<bootId> session=<sessionId>`. 273/273 daemon Vitest tests still pass.
+- ✅ Daemon supervisor integration — `daemon/src/supervisor.ts` (`installSupervisor({ nodePath?, scriptPath?, platform? })` test-seam-friendly; generates systemd unit / launchd plist / Windows Scheduled Task XML for the current node + script path). `--install-supervisor` flag added to `server.ts`; early-exits before any daemon boot logic, prints config path + activation command, never auto-enables. Fixed pre-existing build bug: `dist/daemon/src/hooks/package.json {"type":"commonjs"}` now written by build step alongside `dist/src/package.json` so CJS hooks resolve correctly at runtime. Smoke-tested: `npm start -- --install-supervisor` writes `~/.config/systemd/user/pixel-agents.service` with correct `ExecStart`. 9 new Vitest cases (linux/darwin/win32 content + activate command + alreadyExisted flag + unsupported platform error; 273/273 total).
+- ✅ Phase 2 JSONL polling port — `daemon/src/agents/jsonlPoller.ts` (`JsonlPoller` class: per-agent 500 ms `setInterval`, `start(agentId, sessionId, cwd, jsonlPath, seedOffset)` / `stop(agentId)` / `stopAll()`. Seeds `fileOffset` at 0 for fresh spawns, `stat.size` for revivals (skips replaying history). Inlines `readNewLines` logic (64 KB cap, `lineBuffer` for partial lines, `cancelWaitingTimer`/`cancelPermissionTimer` on new data). Delegates to `processTranscriptLine` from `src/transcriptParser.ts`. `markHookDelivered(agentId)` sets `agent.hookDelivered = true` to suppress heuristic timers when hooks are active. `DaemonHookBridge.setHookDeliveredCallback(cb)` fires on any hook event delivered to a known agent (PreToolUse, PostToolUse, Stop, Notification, SessionEnd); bridge wired in `server.ts` to call `jsonlPoller.markHookDelivered`. Poller added as optional field on `DispatchContext` and `ReviveContext`. Wired: `agent.spawn` starts at offset 0; `agent.close` + spawn `onExit` stop. Revival: poller starts after 3 s health check passes at `jStat.size`; revival `onExit` stops. `stopAll()` called in daemon shutdown. 9 new Vitest cases using `vi.useFakeTimers()` + real `fs.appendFileSync` to drive poll ticks (264/264 total). Build clean.
 - ✅ Phase 1 Day 15-16 — `claude --resume` revival on daemon restart. `daemon/src/agents/resume.ts` (`reviveAgentsOnBoot` iterates `agents.json` per-cwd: JSONL liveness gate (exists + mtime <30d), `claude --resume <sessionId>` via PtyHost, 3s health check via Promise.race). Seven failure paths: JSONL missing/stale → drop entry + log; exit 127 (claude_missing) → emit `agent.spawnFailed { reason: "claude_missing" }`, keep entry; exit 2 + "session format version mismatch" → `agent.spawnFailed { reason: "claude_upgraded" }`, keep entry; other early exit → drop; hangs → keep PTY alive. Successful revival emits `agent.created { isResumed: true }` + refreshes `lastSeenAt` in agents.json. `classifyExit()` helper also wired into `agent.spawn`'s `onExit` handler so `agent.exited` events ship `reason: "user" | "crash" | "claude_missing"`. Clean user-exit (`reason: "user"`) now removes the agent from persistence so daemon restart doesn't attempt `--resume` for closed sessions. Revival fires in background after daemon socket is open so clients connect immediately. `reviveAgentsOnBoot` call in `server.ts` after full context setup. 10 new Vitest cases using `vi.resetModules()` + dynamic imports for path isolation (255/255 total). Build clean.
 
 ## Technical debt surfaced during Phase 0-1
@@ -35,17 +32,17 @@ Active items by priority. For background and big-picture plans, see the linked d
       (Phase 6) or leave the branch + add a comment that it's transitional.
 - [ ] `agent.spawn` reports synchronous spawn failures via `err('spawn_failed', …)`, but
       node-pty's ENOENT for a missing `claude` binary lands asynchronously through `onExit`
-      with exit code 127 — currently broadcast as a generic `agent.exited`. Per arch §error
-      paths, should emit `agent.spawnFailed { reason: "claude_missing" }` instead so clients
-      can toast.
+      with exit code 127 — currently broadcast as a generic `agent.exited`. `agent.exited`
+      now carries `reason: "claude_missing"` but the client-facing `agent.spawnFailed` toast
+      is only emitted by `reviveAgentsOnBoot`, not by live `agent.spawn`. Add the same
+      classification to `agent.spawn`'s onExit so clients can toast on fresh spawns too.
 - [ ] `agent.spawn` persists `palette: 0, hueShift: 0` for every new agent. Port the
       extension's `pickDiversePalette()` (counts current characters, picks least-used; first
       6 get unique skin, beyond that repeats with random hue rotation).
-- [ ] `agent.exited` ships `{exitCode, signal}` but no semantic `reason` field
-      (`"user" | "session_expired" | "claude_upgraded" | "crash"` per arch §10). Classify in
-      Day 15-16 alongside `--resume` recovery so the matrix despawn effect can pick a tone.
-- [ ] `daemon/src/hooks/eventHandler.ts:1` — `TODO(Standalone version)` comment references the
-      now-deleted `server/src/` path. Retarget at `daemon/src/`.
+- [ ] `daemon/src/hooks/eventHandler.ts:1` — `TODO(Standalone version)` comment calls for moving
+      `timerManager` + `types` into `daemon/src/` to eliminate cross-package imports from
+      `src/` via the widened `rootDir`. No urgency while the shared tsconfig include works,
+      but correct long-term once Phase 3+ lands enough daemon-only infra.
 - [ ] `daemon/src/hooks/package.json` CJS-scope override is a workaround for the extension's
       CJS scope. Long-term: either make the extension source ESM (esbuild still emits CJS) or
       split the hooks subtree to its own package. Works today; unusual.
