@@ -18,3 +18,9 @@ export const CONFIG_JSON_PATH = path.join(PIXEL_AGENTS_DIR, 'config.json');
 
 /** Persisted agent registry (per-cwd index of live + restorable sessions). Written by daemon, read on restart. */
 export const AGENTS_JSON_PATH = path.join(PIXEL_AGENTS_DIR, 'agents.json');
+
+/** User-level layout file (shared with the VS Code extension). */
+export const LAYOUT_JSON_PATH = path.join(PIXEL_AGENTS_DIR, 'layout.json');
+
+/** Daemon-private state scratchpad (anything that doesn't belong in the typed registries). */
+export const DAEMON_STATE_PATH = path.join(PIXEL_AGENTS_DIR, 'daemon-state.json');

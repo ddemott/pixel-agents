@@ -59,14 +59,14 @@ Vite will print a local URL (typically `http://localhost:5173`) where the mocked
 
 ### Project Structure
 
-| Directory     | Description                                                                                                                                                                             |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/`        | Extension backend -- Node.js, VS Code API                                                                                                                                               |
-| `daemon/`     | Standalone daemon (TUI port): UDS RPC (channel-mux framing, hello handshake), broadcast event bus, file-backed agent state store, hook HTTP server, hook installer, test suite (Vitest) |
-| `webview-ui/` | React + TypeScript frontend (separate Vite project)                                                                                                                                     |
-| `scripts/`    | Asset extraction and generation tooling                                                                                                                                                 |
-| `assets/`     | Bundled sprites, catalog, and default layout                                                                                                                                            |
-| `docs/`       | TUI port architecture + implementation plan + parity checklist + external-assets guide                                                                                                  |
+| Directory     | Description                                                                                                                                                                                                                             |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/`        | Extension backend -- Node.js, VS Code API                                                                                                                                                                                               |
+| `daemon/`     | Standalone daemon (TUI port): UDS RPC (channel-mux framing, hello handshake), broadcast event bus, writer-tagged layout / config / agents persistence with cross-window watchers, hook HTTP server, hook installer, test suite (Vitest) |
+| `webview-ui/` | React + TypeScript frontend (separate Vite project)                                                                                                                                                                                     |
+| `scripts/`    | Asset extraction and generation tooling                                                                                                                                                                                                 |
+| `assets/`     | Bundled sprites, catalog, and default layout                                                                                                                                                                                            |
+| `docs/`       | TUI port architecture + implementation plan + parity checklist + external-assets guide                                                                                                                                                  |
 
 ## Code Guidelines
 

@@ -38,7 +38,15 @@ daemon/                       — Standalone daemon (TUI port Phase 1; ESM, Node
     agents/
       broadcastSink.ts        — AgentEventSink impl. Fans `post(event)` out to every registered RPC socket as `{kind:'evt', topic, seq, ts, data}` with per-topic monotonic seq. Skips destroyed/unwritable sockets; auto-unregisters on `close`.
       daemonRuntime.ts        — AgentRuntime impl. Single workspace folder = daemon's boot cwd. Multi-folder support arrives once `agent.spawn { cwd }` lands (Day 7-8).
-      fileStateStore.ts       — AgentStateStore backed by `~/.pixel-agents/agents.json`. Atomic tmp+rename writes; malformed file starts empty (Day 6 will add migration + backup).
+      fileStateStore.ts       — AgentStateStore (generic key/value scratchpad) backed by `~/.pixel-agents/daemon-state.json`. Atomic tmp+rename; malformed file starts empty.
+      registry.ts             — Typed `AgentsRegistry` for `~/.pixel-agents/agents.json` (arch §16): per-cwd `PersistedAgent[]` with `upsert/remove/setCwd/forCwd`. Schema version-gated; malformed/unknown-version files start empty. Writer-tagged via `persistence/writerTag.ts`.
+    persistence/
+      writerTag.ts            — Atomic tmp+rename write + `_writer { processId, bootId }` tag (arch §16). `readTagged()` strips the tag and returns `{ data, tag }`; `isOwnWrite()` matches by bootId so a daemon's own writes don't echo through its watcher.
+      watcher.ts              — Hybrid `fs.watch` + 2 s polling fallback. Re-reads on mtime change, parses, drops own-writes (writer-tag match) and emits parsed/typed `data` for external edits.
+    layout/
+      persistence.ts          — `readLayout` / `writeLayout` / `watchLayout` for `~/.pixel-agents/layout.json` plus `LayoutSaveDebouncer` (500 ms coalesce for client `layout.save` RPCs). Layout shape stays a loose record so the daemon doesn't drag in `webview-ui/src/office/types.ts`.
+    config/
+      persistence.ts          — `readConfig` / `writeConfig` / `watchConfig` for `~/.pixel-agents/config.json`. Defensive per-field coerce keeps the daemon and VS Code extension structurally compatible while config evolves.
     hooks/                    — Ported from former server/src/ (CJS subtree via package.json type:commonjs)
       package.json            — {"type": "commonjs"} — scopes hooks/ to CJS so the VS Code extension can import without ESM interop
       httpServer.ts           — HTTP hook server (was server.ts); endpoint, auth, server.json discovery
@@ -58,6 +66,7 @@ daemon/                       — Standalone daemon (TUI port Phase 1; ESM, Node
             claudeHookSrc.ts  — Bundled hook script source (was claude-hook.ts). Reads stdin, discovers target via env→daemon.json→server.json, POSTs JSON
   __tests__/rpc/              — Vitest: framing roundtrip + fuzz; connection handshake/auth/proto-mismatch
   __tests__/agents/           — Vitest: BroadcastSink fan-out + per-topic seq; FileStateStore atomic write + malformed-file recovery
+  __tests__/persistence/      — Vitest: writer-tag own/external matching, fs.watch + polling fallback, LayoutSaveDebouncer coalesce, AgentsRegistry per-cwd roundtrip + schema-version guards
   __tests__/hooks/            — Vitest suite (was server/__tests__/)
     httpServer.test.ts        — HTTP server lifecycle, auth, hooks, server.json
     eventHandler.test.ts      — Event routing, buffering, timer cancellation

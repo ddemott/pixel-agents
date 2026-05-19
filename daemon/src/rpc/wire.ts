@@ -65,11 +65,16 @@ export interface HelloAck {
   world: WorldSnapshot;
 }
 
-/** Stub. Replaced in Day 5+ with the full shape from arch §10. */
+/**
+ * Stub WorldSnapshot. The real `layout` shape is `OfficeLayout` from
+ * `webview-ui/src/office/types.ts`; the daemon doesn't depend on that type
+ * directly, so the layout slot is left as a loose record. Day 7+ will tighten
+ * `assets` and `agents` once the registry is wired into helloAck.
+ */
 export interface WorldSnapshot {
   schemaVersion: 1;
   worldSeed: number;
-  layout: null;
+  layout: Record<string, unknown> | null;
   assets: { catalog: []; characters: []; floors: []; walls: [] };
   agents: [];
 }

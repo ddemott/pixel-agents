@@ -2,14 +2,13 @@
 
 Active items by priority. For background and big-picture plans, see the linked docs at the bottom.
 
-## Now — Phase 1 Day 6
-
-- [ ] **Day 6** — persistence ports (layout, config, `agents.json`) with `_writer` writer tag.
-
-## Next — Phase 1 Day 7-16
+## Now — Phase 1 Day 7-8
 
 - [ ] **Day 7-8** — RPC command catalog (`hello`, `helloAck` w/ inline `WorldSnapshot`,
       `agent.*`, `layout.*`, `subscribe`).
+
+## Next — Phase 1 Day 9-16
+
 - [ ] **Day 9-10** — daemon-side `AgentEventSink` bus (broadcast over UDS, backpressure).
 - [ ] **Day 11** — NDJSON logging to `~/.pixel-agents/logs/`.
 - [ ] **Day 12** — hook integration test (real `claude` → hook script → daemon → mock client).
@@ -47,6 +46,7 @@ From `docs/tui-architecture.md` §23 — kept around because we'll need telemetr
 
 ## Recently done
 
+- ✅ Phase 1 Day 6 — Persistence ports + writer-tag (arch §16): `daemon/src/persistence/{writerTag,watcher}.ts` (atomic tmp+rename + `_writer { processId, bootId }` tagging; `fs.watch` + 2 s polling backup; own-write filtered by bootId match). `daemon/src/layout/persistence.ts` (read/write/watch + `LayoutSaveDebouncer` 500 ms coalesce). `daemon/src/config/persistence.ts` (replaces old `daemon/src/config.ts`). `daemon/src/agents/registry.ts` (typed per-cwd `agents.json`: `{version:1, agents:{[cwd]:PersistedAgent[]}, _writer}`). `FileStateStore` repointed at `daemon-state.json`. Server boot loads layout + config, starts watchers, broadcasts `layout.changed` / `settings.updated` evts on external edits. 18 new Vitest cases (188/188 total). Live smoke: writing an external-tagged `layout.json` immediately ships a `layout.changed` evt to the connected client.
 - ✅ Phase 1 Day 5 — Phase-0 modules wired into daemon: cross-package tsconfig include for `src/{messageSender,terminalRegistry,agentRuntime,types,timerManager,transcriptParser}.ts`, `BroadcastSink` (`AgentEventSink` impl fanning out over UDS w/ per-topic monotonic seq), `DaemonRuntime` (`AgentRuntime` from boot cwd), `FileStateStore` (`AgentStateStore` backed by `agents.json` w/ atomic tmp+rename). `onAuthenticated` callback on RPC connection registers sock with sink. Build emits a `dist/src/package.json {"type":"commonjs"}` scope override so Node 22 ESM can interop with the Phase-0 CJS modules. 9 new Vitest cases (170/170 total).
 - ✅ Phase 1 Day 3-4 — RPC framing on UDS: channel mux (`framing.ts`), `wire.ts` types, `connection.ts` handler with token auth + `helloAck` w/ inline (stub) `WorldSnapshot`. 21 Vitest cases.
 - ✅ Phase 1 Day 2 — port `server/` → `daemon/src/hooks/` + discovery chain + esbuild fix (`47c2288`, `b7ef2f3`, `08f5064`)

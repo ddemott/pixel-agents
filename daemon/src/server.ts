@@ -7,7 +7,8 @@ import { setAgentRuntime } from '../../src/agentRuntime.js';
 import { BroadcastSink } from './agents/broadcastSink.js';
 import { DaemonRuntime } from './agents/daemonRuntime.js';
 import { FileStateStore } from './agents/fileStateStore.js';
-import { readConfig } from './config.js';
+import { AgentsRegistry } from './agents/registry.js';
+import { readConfig, watchConfig } from './config/persistence.js';
 import {
   clearDiscoveryIfOwned,
   type DaemonDiscovery,
@@ -16,7 +17,9 @@ import {
   readDiscovery,
   writeDiscovery,
 } from './discovery.js';
-import { AGENTS_JSON_PATH, DAEMON_SOCKET_PATH } from './paths.js';
+import { readLayout, watchLayout } from './layout/persistence.js';
+import { DAEMON_SOCKET_PATH, DAEMON_STATE_PATH } from './paths.js';
+import type { WriterTag } from './persistence/writerTag.js';
 import { attachConnection } from './rpc/connection.js';
 import type { WorldSnapshot } from './rpc/wire.js';
 
@@ -119,21 +122,39 @@ async function main(): Promise<void> {
 
   writeDiscovery(discovery);
 
-  // Wire Phase-0 modules: BroadcastSink fans events out to all authed clients;
-  // DaemonRuntime supplies the cwd as a workspace folder; FileStateStore backs
-  // the eventual agents.json registry. TerminalRegistry stays Null until
-  // node-pty hosting lands in Day 13-14.
+  const ours: WriterTag = { processId: process.pid, bootId: discovery.bootId };
+
+  // Wire Phase-0 modules + persistence:
+  //  - BroadcastSink fans events out to authed clients.
+  //  - DaemonRuntime exposes the boot cwd as a workspace folder.
+  //  - FileStateStore is the daemon's untyped scratchpad (daemon-state.json).
+  //  - AgentsRegistry owns the typed per-cwd agents.json (arch §16).
+  //  - Layout + config are read on boot and watched for external writes;
+  //    own-writes are filtered via the writer tag.
+  // TerminalRegistry stays Null until node-pty hosting lands in Day 13-14.
   const sink = new BroadcastSink();
-  const stateStore = new FileStateStore(AGENTS_JSON_PATH);
+  const stateStore = new FileStateStore(DAEMON_STATE_PATH);
+  const agents = new AgentsRegistry(ours);
   setAgentRuntime(new DaemonRuntime(process.cwd()));
-  // The state store is held here so future commands (Day 7-8) can reach it;
-  // mark it `void` to keep noUnusedLocals satisfied without erasing the binding.
   void stateStore;
+  void agents;
+
+  let layout = readLayout();
+  const layoutWatcher = watchLayout(ours, (next) => {
+    layout = next;
+    sink.post({ type: 'layout.changed', source: 'file', layout });
+  });
+
+  let liveConfig = readConfig();
+  const configWatcher = watchConfig(ours, (next) => {
+    liveConfig = next;
+    sink.post({ type: 'settings.updated', settings: liveConfig });
+  });
 
   const buildWorldSnapshot = (): WorldSnapshot => ({
     schemaVersion: 1,
     worldSeed: 0,
-    layout: null,
+    layout,
     assets: { catalog: [], characters: [], floors: [], walls: [] },
     agents: [],
   });
@@ -159,6 +180,8 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[Daemon] Received ${signal}, shutting down.`);
+    layoutWatcher.dispose();
+    configWatcher.dispose();
     server.close(() => {
       clearDiscoveryIfOwned(process.pid);
       try {
