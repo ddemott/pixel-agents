@@ -49,6 +49,9 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 # Error handling
 anyhow = "1"
 
+# Seeded RNG — SmallRng for deterministic simulation (parity tests Day 8-9)
+rand = { version = "0.8", features = ["small_rng"] }
+
 # wezterm-term — NOT on crates.io, deferred to Phase 3
 # wezterm-term = "..."
 

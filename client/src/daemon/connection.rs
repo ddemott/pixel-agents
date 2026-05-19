@@ -14,6 +14,8 @@ pub struct DaemonConn {
     writer: OwnedWriteHalf,
     decoder: FrameDecoder,
     pub boot_id: String,
+    /// Raw WorldSnapshot from helloAck — parsed by app.rs to build OfficeState.
+    pub world: serde_json::Value,
 }
 
 #[allow(dead_code)]
@@ -87,7 +89,7 @@ pub async fn connect(caps: ClientCapabilities) -> Result<DaemonConn> {
                 &ack.boot_id[..8],
                 &ack.session_id[..8]
             );
-            Ok(DaemonConn { reader, writer, decoder, boot_id: ack.boot_id })
+            Ok(DaemonConn { reader, writer, decoder, boot_id: ack.boot_id, world: ack.world })
         }
         Inbound::Fatal(f) => bail!("daemon rejected connection: {} — {}", f.code, f.message),
         _ => bail!("expected helloAck, got unexpected envelope"),

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use futures_util::StreamExt;
 use ratatui::crossterm::event::{
     Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
@@ -50,6 +52,12 @@ struct AppState {
     status: Option<StatusMsg>,
     connected_boot_id: Option<String>,
     pub reconnect: Option<ReconnectState>,
+    /// Office simulation — initialized from the first HelloAck's WorldSnapshot.
+    office: Option<crate::office::state::OfficeState>,
+    /// Seeded RNG for deterministic office simulation.
+    rng: SmallRng,
+    /// Timestamp of the last rendered frame for dt calculation.
+    last_frame: Option<Instant>,
 }
 
 impl AppState {
@@ -65,6 +73,9 @@ impl AppState {
             status: None,
             connected_boot_id: None,
             reconnect: None,
+            office: None,
+            rng: SmallRng::from_entropy(),
+            last_frame: None,
         }
     }
 
@@ -165,6 +176,14 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                 match crate::daemon::connect(caps.clone()).await {
                     Ok(new_conn) => {
                         let boot_id = new_conn.boot_id.clone();
+                        let world_seed = new_conn.world.get("worldSeed")
+                            .and_then(|v| v.as_u64()).unwrap_or(0);
+                        let catalog = crate::office::catalog::FurnitureCatalog::from_wire(&new_conn.world);
+                        let layout = new_conn.world.get("layout")
+                            .and_then(|v| crate::office::layout::parse_layout(v))
+                            .unwrap_or_else(|| crate::office::types::OfficeLayout::empty(20, 11));
+                        state.rng = SmallRng::seed_from_u64(world_seed);
+                        state.office = Some(crate::office::state::OfficeState::new(catalog, layout));
                         conn = Some(new_conn);
                         state.on_connected(boot_id);
                         let c = conn.as_mut().unwrap();
@@ -232,6 +251,14 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
 
             // Frame tick at ~60 fps
             _ = tick.tick() => {
+                let now = Instant::now();
+                let dt = state.last_frame
+                    .map(|t| (now - t).as_secs_f32().min(0.1))
+                    .unwrap_or(0.0);
+                state.last_frame = Some(now);
+                if let Some(ref mut office) = state.office {
+                    office.tick(dt, &mut state.rng);
+                }
                 tui.draw(|f| render(f, &mut state))?;
             }
         }
@@ -313,7 +340,7 @@ async fn handle_daemon_json(
         Inbound::Fatal(f) => {
             return Err(anyhow::anyhow!("daemon fatal: {} — {}", f.code, f.message));
         }
-        Inbound::HelloAck(_) => {} // shouldn't arrive post-handshake
+        Inbound::HelloAck(_) => {} // shouldn't arrive post-handshake; world captured at connect()
     }
     Ok(())
 }
