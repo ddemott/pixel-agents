@@ -18,7 +18,7 @@ git clone https://github.com/pablodelucca/pixel-agents.git
 cd pixel-agents
 npm install
 cd webview-ui && npm install && cd ..
-cd server && npm install && cd ..
+cd daemon && npm install && cd ..
 npm run build
 ```
 
@@ -100,17 +100,17 @@ These rules are set to `error` and will block your PR if violated.
 ## Unit & Integration Tests
 
 ```bash
-# Run all tests (webview + server)
+# Run all tests (webview + daemon)
 npm test
 
-# Run only server tests (Vitest)
-npm run test:server
+# Run only daemon tests (Vitest)
+npm run test:daemon
 
 # Run only webview tests
 npm run test:webview
 ```
 
-Server tests cover the HTTP server, hook event routing, hook installer, and the hook script (integration test spawning a real Node process). They run after build since `claude-hook.test.ts` needs the compiled hook script at `dist/hooks/claude-hook.js`.
+Daemon tests cover the HTTP hook server, hook event routing, hook installer, and the bundled hook script (integration test spawning a real Node process). They run after build since `claudeHookSrc.test.ts` needs the compiled hook script at `dist/hooks/claude-hook.js`.
 
 ## End-to-End Tests
 
@@ -162,7 +162,7 @@ Each test runs with an isolated `HOME` and `--user-data-dir`, so no test state l
 2. Make your changes
 3. Verify everything passes locally:
    ```bash
-   npm run lint                         # Extension + server + webview lint
+   npm run lint                         # Extension + daemon + webview lint
    npm run build                        # Type check + esbuild + Vite
    npm test                             # Unit + integration tests
    ```
