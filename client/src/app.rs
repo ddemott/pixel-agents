@@ -10,14 +10,15 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use serde_json::json;
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, Duration, Instant};
 
 use crate::agents::{parse_agent_list, AgentState, AgentStatus};
 use crate::chrome::{self, ChromeAction};
-use crate::daemon::wire::{Inbound, Req};
-use crate::daemon::DaemonConn;
+use crate::daemon::wire::{ClientCapabilities, Inbound, Req};
+use crate::daemon::{framing::Frame, DaemonConn};
 use crate::focus::{tab_press, FocusMode, TabOutcome};
 use crate::keymap::{Action, Keymap};
+use crate::reconnect::{self, ReconnectState};
 use crate::tui::Tui;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(17); // ~60 fps
@@ -34,7 +35,7 @@ enum PendingKind {
 #[derive(Debug)]
 struct StatusMsg {
     text: String,
-    until: tokio::time::Instant,
+    until: Instant,
 }
 
 /// All mutable client state.
@@ -47,6 +48,8 @@ struct AppState {
     pending: HashMap<u32, PendingKind>,
     hit_rects: Vec<chrome::HitRect>,
     status: Option<StatusMsg>,
+    connected_boot_id: Option<String>,
+    pub reconnect: Option<ReconnectState>,
 }
 
 impl AppState {
@@ -60,6 +63,8 @@ impl AppState {
             pending: HashMap::new(),
             hit_rects: Vec::new(),
             status: None,
+            connected_boot_id: None,
+            reconnect: None,
         }
     }
 
@@ -83,7 +88,7 @@ impl AppState {
     fn set_status(&mut self, text: impl Into<String>) {
         self.status = Some(StatusMsg {
             text: text.into(),
-            until: tokio::time::Instant::now() + Duration::from_secs(4),
+            until: Instant::now() + Duration::from_secs(4),
         });
     }
 
@@ -94,9 +99,46 @@ impl AppState {
     fn find_agent_mut(&mut self, id: i32) -> Option<&mut AgentState> {
         self.agents.iter_mut().find(|a| a.id() == id)
     }
+
+    fn is_reconnecting(&self) -> bool {
+        self.reconnect.is_some()
+    }
+
+    /// Called when the socket closes. Clears pending RPCs, starts retry timer.
+    fn on_disconnected(&mut self) {
+        self.pending.clear();
+        self.reconnect = Some(ReconnectState::new());
+    }
+
+    /// Called on successful (re)connect. If bootId changed, clears agent state.
+    fn on_connected(&mut self, boot_id: String) {
+        let changed = self
+            .connected_boot_id
+            .as_deref()
+            .map(|prev| prev != boot_id.as_str())
+            .unwrap_or(false);
+
+        if changed {
+            self.agents.clear();
+            if matches!(self.focus, FocusMode::PtyAgent(_)) {
+                self.focus = FocusMode::Office;
+            }
+        }
+
+        self.connected_boot_id = Some(boot_id);
+        self.reconnect = None;
+    }
 }
 
-pub async fn run(mut conn: DaemonConn) -> Result<()> {
+/// Await the next frame, pending forever when not connected.
+async fn recv_from_conn(conn: &mut Option<DaemonConn>) -> Result<Frame> {
+    match conn.as_mut() {
+        Some(c) => c.recv_frame().await,
+        None => std::future::pending().await,
+    }
+}
+
+pub async fn run(caps: ClientCapabilities) -> Result<()> {
     let keymap = Keymap::load();
     let mut state = AppState::new(keymap);
     let mut tui = Tui::new()?;
@@ -105,41 +147,73 @@ pub async fn run(mut conn: DaemonConn) -> Result<()> {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sigwinch = Sigwinch::new()?;
 
-    // subscribe → agent.list on boot
-    send_subscribe(&mut conn, &mut state).await?;
-    send_agent_list(&mut conn, &mut state).await?;
+    // Trigger an immediate connect attempt on the first loop iteration.
+    state.reconnect = Some(ReconnectState::new_immediate());
+    let mut conn: Option<DaemonConn> = None;
 
     loop {
         // Expire status messages
         if let Some(ref s) = state.status {
-            if tokio::time::Instant::now() >= s.until {
+            if Instant::now() >= s.until {
                 state.status = None;
             }
         }
 
+        // Fire reconnect attempt if the timer is due
+        if let Some(ref rs) = state.reconnect {
+            if rs.is_due() {
+                match crate::daemon::connect(caps.clone()).await {
+                    Ok(new_conn) => {
+                        let boot_id = new_conn.boot_id.clone();
+                        conn = Some(new_conn);
+                        state.on_connected(boot_id);
+                        let c = conn.as_mut().unwrap();
+                        send_subscribe(c, &mut state).await?;
+                        send_agent_list(c, &mut state).await?;
+                    }
+                    Err(_) => {
+                        let rs = state.reconnect.as_mut().unwrap();
+                        if rs.should_fork() {
+                            rs.fork_attempted = true;
+                            reconnect::try_fork_daemon();
+                        }
+                        rs.on_failure();
+                    }
+                }
+                tui.draw(|f| render(f, &mut state))?;
+            }
+        }
+
         tokio::select! {
-            // Daemon message
-            frame = conn.recv_frame() => {
+            // Daemon frames (only when connected)
+            frame = recv_from_conn(&mut conn) => {
                 match frame {
-                    Ok(crate::daemon::framing::Frame::Ndjson(json)) => {
-                        if let Err(e) = handle_daemon_json(&json, &mut state, &mut conn).await {
+                    Ok(Frame::Ndjson(json)) => {
+                        if let Err(e) = handle_daemon_json(&json, &mut state, conn.as_mut().unwrap()).await {
                             drop(tui);
                             return Err(e);
                         }
                     }
                     Ok(_) => {} // binary frames (PTY, asset) handled in Phase 3+
-                    Err(e) => {
-                        drop(tui);
-                        return Err(e.context("daemon disconnected"));
+                    Err(_) => {
+                        conn = None;
+                        state.on_disconnected();
                     }
                 }
+            }
+
+            // Wake up when the reconnect timer fires (guard disables this arm when connected)
+            _ = tokio::time::sleep_until(
+                state.reconnect.as_ref().map(|rs| rs.next_try).unwrap_or_else(|| Instant::now() + Duration::from_secs(3600))
+            ), if state.is_reconnecting() => {
+                // Actual attempt fires at top of next loop iteration via is_due()
             }
 
             // Crossterm input / resize / paste events
             maybe_event = events.next() => {
                 match maybe_event {
                     Some(Ok(event)) => {
-                        if handle_event(event, &mut state, &mut conn).await? == AppAction::Quit {
+                        if handle_event(event, &mut state, conn.as_mut()).await? == AppAction::Quit {
                             return Ok(());
                         }
                     }
@@ -218,7 +292,7 @@ async fn handle_daemon_json(
                 return Ok(());
             };
             match kind {
-                PendingKind::Subscribe => {} // no-op; subscription is set server-side
+                PendingKind::Subscribe => {} // subscription is set server-side
                 PendingKind::AgentList => {
                     if res.ok {
                         if let Some(data) = res.data {
@@ -229,7 +303,6 @@ async fn handle_daemon_json(
                 PendingKind::AgentSpawn => {
                     if res.ok {
                         state.set_status("Agent spawned");
-                        // The agent.created event will add it to state.agents
                     } else if let Some(err) = res.error {
                         state.set_status(format!("Spawn failed: {}", err.message));
                     }
@@ -268,11 +341,8 @@ fn handle_event_envelope(evt: crate::daemon::wire::Evt, state: &mut AppState) {
             if let Some(id) = evt.data.get("id").and_then(|v| v.as_i64()) {
                 let id = id as i32;
                 if let Some(a) = state.find_agent_mut(id) {
-                    let status_str = evt
-                        .data
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let status_str =
+                        evt.data.get("status").and_then(|v| v.as_str()).unwrap_or("");
                     a.status = match status_str {
                         "active" => {
                             let tool = evt
@@ -303,11 +373,10 @@ enum AppAction {
 async fn handle_event(
     event: Event,
     state: &mut AppState,
-    conn: &mut DaemonConn,
+    conn: Option<&mut DaemonConn>,
 ) -> Result<AppAction> {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            // Reserved keys checked first (active in all focus modes)
             if let Some(action) = state.keymap.matches(key.modifiers, key.code) {
                 match action {
                     Action::Quit => return Ok(AppAction::Quit),
@@ -324,7 +393,6 @@ async fn handle_event(
                 return Ok(AppAction::Continue);
             }
 
-            // Legacy quit shortcuts
             match key.code {
                 KeyCode::Char('q') if key.modifiers == KeyModifiers::NONE => {
                     if matches!(state.focus, FocusMode::Office | FocusMode::Editor) {
@@ -338,7 +406,7 @@ async fn handle_event(
                     match tab_press(&state.focus, &state.agent_ids()) {
                         TabOutcome::Focus(new) => state.focus = new,
                         TabOutcome::PassThroughToPty => {
-                            // PTY input wired in Phase 4; no-op for now
+                            // PTY input wired in Phase 4
                         }
                         TabOutcome::NoOp => {}
                     }
@@ -352,7 +420,11 @@ async fn handle_event(
                 if let Some(action) = chrome::hit_test(&state.hit_rects, mouse.column, mouse.row) {
                     match action {
                         ChromeAction::SpawnAgent => {
-                            send_agent_spawn(conn, state).await?;
+                            if let Some(c) = conn {
+                                send_agent_spawn(c, state).await?;
+                            } else {
+                                state.set_status("Not connected to daemon");
+                            }
                         }
                         ChromeAction::ToggleLayout => {
                             state.focus = match &state.focus {
@@ -371,9 +443,8 @@ async fn handle_event(
         }
 
         Event::Paste(text) => {
-            // Bracketed paste: only forwarded in PtyAgent mode (Phase 4)
             if state.focus.is_pty_agent() {
-                // PTY input wired in Phase 4; no-op for now
+                // PTY input wired in Phase 4
                 let _ = text;
             }
         }
@@ -385,15 +456,31 @@ async fn handle_event(
 
 fn render(frame: &mut ratatui::Frame, state: &mut AppState) {
     let areas = chrome::split_areas(frame.area());
-
-    // Draw main content area
     draw_main(frame, areas.main, state);
-
-    // Draw chrome (updates hit_rects via mutable state)
     state.hit_rects = chrome::draw(frame, &state.focus, state.zoom, state.agents.len());
 }
 
 fn draw_main(frame: &mut ratatui::Frame, area: Rect, state: &AppState) {
+    // Reconnect overlay takes over the whole main area
+    if let Some(ref rs) = state.reconnect {
+        let attempt_str = if rs.attempt == 0 {
+            "Connecting…".to_string()
+        } else {
+            format!("Reconnecting… (attempt {}, {}s elapsed)", rs.attempt, rs.elapsed_secs())
+        };
+        let lines = vec![
+            Line::raw(""),
+            Line::styled(&attempt_str, Style::default().fg(Color::Yellow)),
+            Line::raw(""),
+            Line::styled("  Ctrl+C to quit", Style::default().fg(Color::DarkGray)),
+        ];
+        let p = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("Pixel Agents"))
+            .style(Style::default());
+        frame.render_widget(p, area);
+        return;
+    }
+
     if state.agents.is_empty() {
         let msg = if let Some(ref s) = state.status {
             s.text.as_str()
@@ -407,7 +494,6 @@ fn draw_main(frame: &mut ratatui::Frame, area: Rect, state: &AppState) {
         return;
     }
 
-    // Per-agent status rows
     let lines: Vec<Line> = state
         .agents
         .iter()
@@ -422,17 +508,14 @@ fn draw_main(frame: &mut ratatui::Frame, area: Rect, state: &AppState) {
                 AgentStatus::Idle => Color::Cyan,
             };
             let tool_suffix = match &a.status {
-                AgentStatus::Active(tool) if !tool.is_empty() => {
-                    format!(" ({})", tool)
-                }
+                AgentStatus::Active(tool) if !tool.is_empty() => format!(" ({})", tool),
                 _ => String::new(),
             };
             Line::from(vec![
                 Span::raw(indicator),
                 Span::styled(
                     format!("Agent #{}", a.id()),
-                    Style::default()
-                        .fg(if focused { Color::White } else { Color::Gray }),
+                    Style::default().fg(if focused { Color::White } else { Color::Gray }),
                 ),
                 Span::raw("  "),
                 Span::styled(
@@ -447,7 +530,11 @@ fn draw_main(frame: &mut ratatui::Frame, area: Rect, state: &AppState) {
     let status_text = if let Some(ref s) = state.status {
         format!(" {} ", s.text)
     } else {
-        format!(" {} agent{} ", state.agents.len(), if state.agents.len() == 1 { "" } else { "s" })
+        format!(
+            " {} agent{} ",
+            state.agents.len(),
+            if state.agents.len() == 1 { "" } else { "s" }
+        )
     };
 
     let p = Paragraph::new(lines)
@@ -588,15 +675,10 @@ mod tests {
             topic: "agent.created".into(),
             seq: 1,
             ts: 0,
-            data: serde_json::json!({
-                "id": 3,
-                "sessionId": "s",
-                "palette": 0,
-                "hueShift": 0
-            }),
+            data: serde_json::json!({ "id": 3, "sessionId": "s", "palette": 0, "hueShift": 0 }),
         };
         handle_event_envelope(evt, &mut s);
-        assert_eq!(s.agents.len(), 1); // no duplicate
+        assert_eq!(s.agents.len(), 1);
     }
 
     #[test]
@@ -633,5 +715,58 @@ mod tests {
         };
         handle_event_envelope(evt, &mut s);
         assert_eq!(s.agents[0].status, AgentStatus::Active("Bash".into()));
+    }
+
+    #[test]
+    fn on_disconnected_clears_pending_and_sets_reconnect() {
+        let mut s = make_state();
+        s.pending.insert(1, PendingKind::AgentList);
+        s.on_disconnected();
+        assert!(s.pending.is_empty());
+        assert!(s.reconnect.is_some());
+    }
+
+    #[test]
+    fn on_connected_clears_reconnect() {
+        let mut s = make_state();
+        s.reconnect = Some(ReconnectState::new());
+        s.on_connected("boot-1".into());
+        assert!(s.reconnect.is_none());
+        assert_eq!(s.connected_boot_id.as_deref(), Some("boot-1"));
+    }
+
+    #[test]
+    fn on_connected_new_boot_id_clears_agents() {
+        let mut s = make_state();
+        let data = serde_json::json!({
+            "agents": [{"id": 1, "sessionId": "s", "palette": 0, "hueShift": 0}]
+        });
+        s.agents = parse_agent_list(&data);
+        s.on_connected("boot-1".into()); // first connect — no clear
+        assert_eq!(s.agents.len(), 1);
+
+        s.on_connected("boot-2".into()); // bootId changed — clear
+        assert!(s.agents.is_empty());
+    }
+
+    #[test]
+    fn on_connected_same_boot_id_keeps_agents() {
+        let mut s = make_state();
+        let data = serde_json::json!({
+            "agents": [{"id": 1, "sessionId": "s", "palette": 0, "hueShift": 0}]
+        });
+        s.agents = parse_agent_list(&data);
+        s.on_connected("boot-1".into());
+        s.on_connected("boot-1".into()); // same bootId — keep agents
+        assert_eq!(s.agents.len(), 1);
+    }
+
+    #[test]
+    fn on_connected_boot_id_change_resets_pty_focus() {
+        let mut s = make_state();
+        s.focus = FocusMode::PtyAgent(3);
+        s.on_connected("boot-1".into()); // first connect
+        s.on_connected("boot-2".into()); // bootId changed
+        assert_eq!(s.focus, FocusMode::Office);
     }
 }

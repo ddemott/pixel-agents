@@ -13,6 +13,7 @@ pub struct DaemonConn {
     reader: OwnedReadHalf,
     writer: OwnedWriteHalf,
     decoder: FrameDecoder,
+    pub boot_id: String,
 }
 
 #[allow(dead_code)]
@@ -86,7 +87,7 @@ pub async fn connect(caps: ClientCapabilities) -> Result<DaemonConn> {
                 &ack.boot_id[..8],
                 &ack.session_id[..8]
             );
-            Ok(DaemonConn { reader, writer, decoder })
+            Ok(DaemonConn { reader, writer, decoder, boot_id: ack.boot_id })
         }
         Inbound::Fatal(f) => bail!("daemon rejected connection: {} — {}", f.code, f.message),
         _ => bail!("expected helloAck, got unexpected envelope"),
