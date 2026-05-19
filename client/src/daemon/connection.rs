@@ -10,7 +10,7 @@ use super::discovery::read_discovery;
 use super::framing::{encode_ndjson, Frame, FrameDecoder};
 use super::wire::{ClientCapabilities, Hello, Inbound};
 
-pub async fn connect() -> Result<()> {
+pub async fn connect(caps: ClientCapabilities) -> Result<()> {
     let disc = read_discovery().context("read daemon discovery")?;
 
     let stream = UnixStream::connect(&disc.socket_path)
@@ -19,7 +19,6 @@ pub async fn connect() -> Result<()> {
 
     let (mut reader, mut writer) = stream.into_split();
 
-    let caps = ClientCapabilities::stub(220, 50);
     let hello = Hello::new(disc.token.clone(), caps);
     let frame_bytes = encode_ndjson(&hello).map_err(|e| anyhow::anyhow!("{e}"))?;
     writer.write_all(&frame_bytes).await.context("send hello")?;
