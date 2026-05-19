@@ -5,7 +5,8 @@
 - ✅ **Phase 0 — MessageSender refactor** (8 dev-days budget, completed in commits `3d36a3c` + `a6984c4`). All core logic modules decoupled from `vscode`. See CLAUDE.md for current src/ layout.
 - ✅ **Phase 1 Day 1 — Daemon scaffold** (commits `ab77a32` + `764da25`). Daemon boots, reads `config.json`, binds UDS socket, writes `daemon.json` with bootId/token/PID, handles SIGTERM/SIGINT cleanly.
 - ✅ **Phase 1 Day 2 — Port server/ → daemon/src/hooks/** (commits `47c2288` + `b7ef2f3` + `08f5064`). All hook server + event handler + provider tree moved with planned renames. Hook script discovery chain extended: `PIXEL_AGENTS_HOOK_URL` → `daemon.json` → `server.json`. esbuild path repaired (had been silently no-op'ing). 140 unit tests + 1 E2E test passing.
-- 🟡 **Phase 1 Day 3-4 — RPC framing** (next): channel mux on the UDS — 0x00 NDJSON, 0x01 PTY out, 0x02 asset blob, 0x03 PTY in.
+- ✅ **Phase 1 Day 3-4 — RPC framing on UDS.** `daemon/src/rpc/{framing,wire,connection}.ts` — tag-byte channel mux (0x00 NDJSON, 0x01/0x03 PTY, 0x02 asset blob), 256 KB / 1 MB caps, asset chunking + high-bit-of-tier EOF, streaming decoder. Auth via `daemon.json` token (timing-safe compare). `hello` → `helloAck` with inline stub `WorldSnapshot` (real shape lands Day 5+). 21 Vitest cases including a fuzz scenario across all four channels. 161/161 tests green; live smoke handshake against booted daemon confirms ack on the wire.
+- 🟡 **Phase 1 Day 5 — Wire Phase-0 modules into daemon** (next): daemon-side `AgentEventSink`, `TerminalRegistry`, `AgentRuntime`, `AgentStateStore`.
 
 ## 1. Overview
 

@@ -2,18 +2,14 @@
 
 Active items by priority. For background and big-picture plans, see the linked docs at the bottom.
 
-## Now — Phase 1 Day 3-4
-
-- [ ] **RPC framing on the UDS socket.** Channel multiplex over the existing daemon socket:
-      `0x00` NDJSON control · `0x01` PTY out · `0x02` asset blob · `0x03` PTY in (>64 KB).
-      NDJSON line cap 256 KB; binary frame cap 1 MB. Auth via Bearer token from `daemon.json`.
-      Spec lives in `docs/tui-architecture.md` §10 + `docs/tui-implementation-plan.md` Phase 1 Day 3-4.
-
-## Next — Phase 1 Day 5-16
+## Now — Phase 1 Day 5
 
 - [ ] **Day 5** — bring Phase-0 modules into the daemon. No new source files: the daemon
       imports `src/transcriptParser.ts` etc. across packages, backed by daemon-side impls of
       `AgentEventSink`, `TerminalRegistry`, `AgentRuntime`, `AgentStateStore`.
+
+## Next — Phase 1 Day 6-16
+
 - [ ] **Day 6** — persistence ports (layout, config, `agents.json`) with `_writer` writer tag.
 - [ ] **Day 7-8** — RPC command catalog (`hello`, `helloAck` w/ inline `WorldSnapshot`,
       `agent.*`, `layout.*`, `subscribe`).
@@ -54,6 +50,7 @@ From `docs/tui-architecture.md` §23 — kept around because we'll need telemetr
 
 ## Recently done
 
+- ✅ Phase 1 Day 3-4 — RPC framing on UDS: channel mux (`framing.ts`), `wire.ts` types, `connection.ts` handler with token auth + `helloAck` w/ inline (stub) `WorldSnapshot`. 21 Vitest cases.
 - ✅ Phase 1 Day 2 — port `server/` → `daemon/src/hooks/` + discovery chain + esbuild fix (`47c2288`, `b7ef2f3`, `08f5064`)
 - ✅ Phase 1 Day 1 — daemon scaffold + `config.json` read (`ab77a32`, `764da25`)
 - ✅ Phase 0 — MessageSender / TerminalRegistry / AgentRuntime decoupling (`3d36a3c`, `a6984c4`)

@@ -27,10 +27,14 @@ daemon/                       — Standalone daemon (TUI port Phase 1; ESM, Node
   tsconfig.test.json          — Vitest type-check config; includes ../src/{types,timerManager,messageSender}
   vitest.config.ts            — Test runner config (globals, 10s timeout)
   src/
-    server.ts                 — Daemon entrypoint: boot, read config.json, bind UDS, write daemon.json, SIGTERM/SIGINT
+    server.ts                 — Daemon entrypoint: boot, read config.json, bind UDS, write daemon.json, SIGTERM/SIGINT, attach RPC connections
     discovery.ts              — Atomic read/write daemon.json, PID liveness check
     config.ts                 — Reads ~/.pixel-agents/config.json (structurally compatible with src/configPersistence.ts)
     paths.ts                  — ~/.pixel-agents/* path constants (DAEMON_JSON_PATH, DAEMON_SOCKET_PATH, CONFIG_JSON_PATH)
+    rpc/
+      framing.ts              — Channel-mux encoder/decoder (arch §10): 0x00 NDJSON (256 KB cap), 0x01/0x03 PTY (1 MB cap), 0x02 asset blob (chunked, high-bit-of-tier EOF). FrameDecoder is streaming.
+      wire.ts                 — NDJSON envelope types (Req/Res/Evt/Hello/HelloAck), ClientCapabilities, stub WorldSnapshot. protoVersion = 1.
+      connection.ts           — Per-socket handler: enforce hello-first, timing-safe token compare, send helloAck with inline WorldSnapshot, dispatch placeholder for unknown methods (real catalog lands Day 7-8).
     hooks/                    — Ported from former server/src/ (CJS subtree via package.json type:commonjs)
       package.json            — {"type": "commonjs"} — scopes hooks/ to CJS so the VS Code extension can import without ESM interop
       httpServer.ts           — HTTP hook server (was server.ts); endpoint, auth, server.json discovery
@@ -48,6 +52,7 @@ daemon/                       — Standalone daemon (TUI port Phase 1; ESM, Node
           constants.ts        — Claude hook event names + bundle filename
           hooks/
             claudeHookSrc.ts  — Bundled hook script source (was claude-hook.ts). Reads stdin, discovers target via env→daemon.json→server.json, POSTs JSON
+  __tests__/rpc/              — Vitest: framing roundtrip + fuzz; connection handshake/auth/proto-mismatch
   __tests__/hooks/            — Vitest suite (was server/__tests__/)
     httpServer.test.ts        — HTTP server lifecycle, auth, hooks, server.json
     eventHandler.test.ts      — Event routing, buffering, timer cancellation

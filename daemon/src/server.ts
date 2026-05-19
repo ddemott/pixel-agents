@@ -13,6 +13,8 @@ import {
   writeDiscovery,
 } from './discovery.js';
 import { DAEMON_SOCKET_PATH } from './paths.js';
+import { attachConnection } from './rpc/connection.js';
+import type { WorldSnapshot } from './rpc/wire.js';
 
 const DAEMON_VERSION = '0.0.1';
 const BOOT_TIMEOUT_MS = 3000;
@@ -113,10 +115,21 @@ async function main(): Promise<void> {
 
   writeDiscovery(discovery);
 
-  // For now: accept connections, immediately close them. Real RPC framing
-  // lands in Phase 1 Day 3-4 (P1.5).
+  const buildWorldSnapshot = (): WorldSnapshot => ({
+    schemaVersion: 1,
+    worldSeed: 0,
+    layout: null,
+    assets: { catalog: [], characters: [], floors: [], walls: [] },
+    agents: [],
+  });
+
   server.on('connection', (sock) => {
-    sock.end('daemon-stub\n');
+    attachConnection(sock, {
+      expectedToken: discovery.token,
+      bootId: discovery.bootId,
+      daemonVersion: DAEMON_VERSION,
+      buildWorldSnapshot,
+    });
   });
 
   console.log(
