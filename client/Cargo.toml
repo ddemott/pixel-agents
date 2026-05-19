@@ -18,7 +18,7 @@ tokio = { version = "1", features = ["full"] }
 # TUI
 ratatui = "0.30"
 ratatui-crossterm = "0.1"
-crossterm = "0.29"
+crossterm = { version = "0.29", features = ["event-stream"] }
 
 # Framing / protocol
 bytes = "1"
@@ -39,6 +39,9 @@ directories = "6"
 
 # Image decoding (sixel / kitty pixel protocol, Phase 3)
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Async stream utilities (StreamExt for crossterm EventStream)
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # Error handling
 anyhow = "1"
