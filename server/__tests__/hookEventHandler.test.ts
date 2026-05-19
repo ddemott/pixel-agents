@@ -32,12 +32,11 @@ function createTestAgent(overrides: Partial<AgentState> = {}): AgentState {
   } as AgentState;
 }
 
-function createMockWebview() {
+function createMockSink() {
   const messages: Array<Record<string, unknown>> = [];
   return {
-    postMessage: vi.fn((msg: Record<string, unknown>) => {
+    post: vi.fn((msg: Record<string, unknown>) => {
       messages.push(msg);
-      return Promise.resolve(true);
     }),
     messages,
   };
@@ -47,19 +46,19 @@ describe('HookEventHandler', () => {
   let agents: Map<number, AgentState>;
   let waitingTimers: Map<number, ReturnType<typeof setTimeout>>;
   let permissionTimers: Map<number, ReturnType<typeof setTimeout>>;
-  let mockWebview: ReturnType<typeof createMockWebview>;
+  let mockSink: ReturnType<typeof createMockSink>;
   let handler: HookEventHandler;
 
   beforeEach(() => {
     agents = new Map();
     waitingTimers = new Map();
     permissionTimers = new Map();
-    mockWebview = createMockWebview();
+    mockSink = createMockSink();
     handler = new HookEventHandler(
       agents,
       waitingTimers,
       permissionTimers,
-      () => mockWebview as unknown as import('vscode').Webview,
+      () => mockSink,
       claudeProvider,
     );
   });
@@ -76,7 +75,7 @@ describe('HookEventHandler', () => {
       session_id: 'sess-1',
     });
 
-    const msg = mockWebview.messages.find((m) => m.type === 'agentToolPermission');
+    const msg = mockSink.messages.find((m) => m.type === 'agentToolPermission');
     expect(msg).toBeTruthy();
     expect(msg?.id).toBe(1);
   });
@@ -108,7 +107,7 @@ describe('HookEventHandler', () => {
       session_id: 'sess-1',
     });
 
-    const subMsg = mockWebview.messages.find((m) => m.type === 'subagentToolPermission');
+    const subMsg = mockSink.messages.find((m) => m.type === 'subagentToolPermission');
     expect(subMsg).toBeTruthy();
     expect(subMsg?.parentToolId).toBe('tool-parent');
   });
@@ -126,7 +125,7 @@ describe('HookEventHandler', () => {
       notification_type: 'permission_prompt',
     });
 
-    const msg = mockWebview.messages.find((m) => m.type === 'agentToolPermission');
+    const msg = mockSink.messages.find((m) => m.type === 'agentToolPermission');
     expect(msg).toBeTruthy();
     expect(agent.permissionSent).toBe(true);
   });
@@ -143,9 +142,7 @@ describe('HookEventHandler', () => {
     });
 
     expect(agent.isWaiting).toBe(true);
-    const msg = mockWebview.messages.find(
-      (m) => m.type === 'agentStatus' && m.status === 'waiting',
-    );
+    const msg = mockSink.messages.find((m) => m.type === 'agentStatus' && m.status === 'waiting');
     expect(msg).toBeTruthy();
   });
 
@@ -162,7 +159,7 @@ describe('HookEventHandler', () => {
     });
 
     expect(agent.isWaiting).toBe(true);
-    const waitMsg = mockWebview.messages.find(
+    const waitMsg = mockSink.messages.find(
       (m) => m.type === 'agentStatus' && m.status === 'waiting',
     );
     expect(waitMsg).toBeTruthy();
@@ -187,9 +184,9 @@ describe('HookEventHandler', () => {
 
     expect(agent.activeToolIds.has('fg-tool')).toBe(false);
     expect(agent.activeToolIds.has('bg-tool')).toBe(true);
-    const clearMsg = mockWebview.messages.find((m) => m.type === 'agentToolsClear');
+    const clearMsg = mockSink.messages.find((m) => m.type === 'agentToolsClear');
     expect(clearMsg).toBeTruthy();
-    const reSent = mockWebview.messages.find(
+    const reSent = mockSink.messages.find(
       (m) => m.type === 'agentToolStart' && m.toolId === 'bg-tool',
     );
     expect(reSent).toBeTruthy();
@@ -220,7 +217,7 @@ describe('HookEventHandler', () => {
     });
 
     // No messages sent, no crash
-    expect(mockWebview.messages).toHaveLength(0);
+    expect(mockSink.messages).toHaveLength(0);
   });
 
   it('buffers events when unregistered agents exist (internal agent race)', () => {
@@ -250,7 +247,7 @@ describe('HookEventHandler', () => {
     });
 
     // Auto-discovery handles it directly
-    const waitMsg = mockWebview.messages.find(
+    const waitMsg = mockSink.messages.find(
       (m) => m.type === 'agentStatus' && m.status === 'waiting',
     );
     expect(waitMsg).toBeTruthy();
@@ -275,7 +272,7 @@ describe('HookEventHandler', () => {
     handler.registerAgent('expired-sess', 2);
 
     // No messages (event was pruned)
-    expect(mockWebview.messages).toHaveLength(0);
+    expect(mockSink.messages).toHaveLength(0);
 
     handler.dispose();
   });
@@ -368,7 +365,7 @@ describe('HookEventHandler', () => {
     });
 
     // No agent created (pending, awaiting confirmation)
-    expect(mockWebview.messages).toHaveLength(0);
+    expect(mockSink.messages).toHaveLength(0);
   });
 
   // ── SessionEnd ──────────────────────────────────────────────
@@ -450,7 +447,7 @@ describe('HookEventHandler', () => {
     });
 
     // No agent created, no messages
-    expect(mockWebview.messages).toHaveLength(0);
+    expect(mockSink.messages).toHaveLength(0);
   });
 
   // ── PreToolUse / PostToolUse ─────────────────────────────────
@@ -467,7 +464,7 @@ describe('HookEventHandler', () => {
       tool_input: { file_path: '/src/server.ts' },
     });
 
-    const toolMsg = mockWebview.messages.find((m) => m.type === 'agentToolStart');
+    const toolMsg = mockSink.messages.find((m) => m.type === 'agentToolStart');
     expect(toolMsg).toBeTruthy();
     expect(toolMsg?.toolName).toBe('Read');
     expect(toolMsg?.status).toBe('Reading server.ts');
@@ -488,7 +485,7 @@ describe('HookEventHandler', () => {
 
     expect(agent.isWaiting).toBe(false);
     expect(agent.hadToolsInTurn).toBe(true);
-    const activeMsg = mockWebview.messages.find(
+    const activeMsg = mockSink.messages.find(
       (m) => m.type === 'agentStatus' && m.status === 'active',
     );
     expect(activeMsg).toBeTruthy();
@@ -505,7 +502,7 @@ describe('HookEventHandler', () => {
       session_id: 'sess-1',
     });
 
-    const doneMsg = mockWebview.messages.find((m) => m.type === 'agentToolDone');
+    const doneMsg = mockSink.messages.find((m) => m.type === 'agentToolDone');
     expect(doneMsg).toBeTruthy();
     expect(doneMsg?.toolId).toBe('hook-123');
     expect(agent.currentHookToolId).toBeUndefined();
@@ -522,7 +519,7 @@ describe('HookEventHandler', () => {
       session_id: 'sess-1',
     });
 
-    const doneMsg = mockWebview.messages.find((m) => m.type === 'agentToolDone');
+    const doneMsg = mockSink.messages.find((m) => m.type === 'agentToolDone');
     expect(doneMsg).toBeTruthy();
     expect(doneMsg?.toolId).toBe('hook-456');
     expect(agent.currentHookToolId).toBeUndefined();
@@ -832,10 +829,10 @@ describe('HookEventHandler', () => {
       if (expectTeammateDetected) {
         expect(onTeammateDetected).toHaveBeenCalledWith(1, 'sess-1', 'web-researcher');
         // Teammate path skips subagentToolStart (no ghost sub-agent character).
-        expect(mockWebview.messages.find((m) => m.type === 'subagentToolStart')).toBeUndefined();
+        expect(mockSink.messages.find((m) => m.type === 'subagentToolStart')).toBeUndefined();
       } else {
         expect(onTeammateDetected).not.toHaveBeenCalled();
-        const msg = mockWebview.messages.find((m) => m.type === 'subagentToolStart');
+        const msg = mockSink.messages.find((m) => m.type === 'subagentToolStart');
         if (seedActiveTool) {
           // Basic path with real tool id available.
           expect(msg).toBeTruthy();

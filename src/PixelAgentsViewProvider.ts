@@ -142,7 +142,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
       this.agents,
       this.waitingTimers,
       this.permissionTimers,
-      () => this.webview,
+      () => this.sink,
       claudeProvider,
       this.watchAllSessions,
     );

@@ -1,8 +1,7 @@
-// TODO(Standalone version): Replace vscode.Webview with MessageSender interface from core/src/messages.ts
 // TODO(Standalone version): Move timerManager and types to server/src/ to eliminate cross-boundary imports
 import * as path from 'path';
-import type * as vscode from 'vscode';
 
+import type { AgentEventSink } from '../../src/messageSender.js';
 import { cancelPermissionTimer, cancelWaitingTimer } from '../../src/timerManager.js';
 import type { AgentState } from '../../src/types.js';
 import { HOOK_EVENT_BUFFER_MS, SESSION_END_GRACE_MS } from './constants.js';
@@ -85,7 +84,7 @@ export class HookEventHandler {
     private agents: Map<number, AgentState>,
     private waitingTimers: Map<number, ReturnType<typeof setTimeout>>,
     private permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
-    private getWebview: () => vscode.Webview | undefined,
+    private getSink: () => AgentEventSink,
     private provider: HookProvider,
     private watchAllSessionsRef?: { current: boolean },
   ) {}
@@ -309,34 +308,34 @@ export class HookEventHandler {
         `[Pixel Agents] Hook: Agent ${agentId} - ${eventName} (session=${event.session_id.slice(0, 8)}...)`,
       );
 
-    const webview = this.getWebview();
+    const sink = this.getSink();
 
     // Dispatch on normalized AgentEvent.kind, not raw hook event names.
     // The TeammateIdle / TaskCompleted hooks normalize to `subagentTurnEnd` -- both
     // carry `agent_type` in the raw payload, which we pass to the team-routing handler.
     switch (normEvent.kind) {
       case 'sessionEnd':
-        return this.handleSessionEnd(normEvent, agent, agentId, webview);
+        return this.handleSessionEnd(normEvent, agent, agentId, sink);
       case 'toolStart':
-        return this.handlePreToolUse(normEvent, agent, agentId, webview);
+        return this.handlePreToolUse(normEvent, agent, agentId, sink);
       case 'toolEnd':
         // Both PostToolUse and PostToolUseFailure normalize to toolEnd. Distinguishing
         // them inside handlers would require extra info; the existing behavior was
         // identical for both (agentToolDone + clear currentHookToolId), so one branch suffices.
-        return this.handlePostToolUse(agent, agentId, webview);
+        return this.handlePostToolUse(agent, agentId, sink);
       case 'subagentStart':
         return this.provider.team
-          ? this.handleSubagentStart(event, agent, agentId, webview)
+          ? this.handleSubagentStart(event, agent, agentId, sink)
           : undefined;
       case 'subagentEnd':
-        return this.provider.team ? this.handleSubagentStop(agent, agentId, webview) : undefined;
+        return this.provider.team ? this.handleSubagentStop(agent, agentId, sink) : undefined;
       case 'permissionRequest':
         // Handles BOTH the PermissionRequest hook AND the Notification(permission_prompt)
         // hook -- normalizeHookEvent collapses them into one event kind.
-        return this.handlePermissionRequest(agent, agentId, webview);
+        return this.handlePermissionRequest(agent, agentId, sink);
       case 'turnEnd':
         // Handles Stop AND Notification(idle_prompt) -- both normalize to turnEnd.
-        return this.handleStop(agent, agentId, webview);
+        return this.handleStop(agent, agentId, sink);
       case 'subagentTurnEnd':
         // Handles TeammateIdle AND TaskCompleted -- both normalize here. The team-
         // provider's extractTeammateNameFromEvent(raw) routes to the specific teammate.
@@ -345,7 +344,7 @@ export class HookEventHandler {
         if (eventName === 'TaskCompleted') {
           return this.handleTaskCompleted(event, agentId);
         }
-        return this.handleTeammateIdle(event, agent, agentId, webview);
+        return this.handleTeammateIdle(event, agent, agentId, sink);
       case 'userTurn':
       case 'progress':
         // Not yet consumed by the office visualization. Silently drop.
@@ -361,7 +360,7 @@ export class HookEventHandler {
     normEvent: Extract<AgentEvent, { kind: 'sessionEnd' }>,
     agent: AgentState,
     agentId: number,
-    webview: vscode.Webview | undefined,
+    sink: AgentEventSink,
   ): void {
     const reason = normEvent.reason;
     if (debug)
@@ -375,7 +374,7 @@ export class HookEventHandler {
 
     if (expectsFollowUp) {
       agent.pendingClear = true;
-      this.markAgentWaiting(agent, agentId, webview);
+      this.markAgentWaiting(agent, agentId, sink);
       if (debug)
         console.log(
           `[Pixel Agents] Hook: Agent ${agentId} - SessionEnd(reason=${reason}), awaiting possible SessionStart`,
@@ -390,21 +389,21 @@ export class HookEventHandler {
     } else {
       // Immediate cleanup for exit/logout. onSessionEnd → removeTeammates in the
       // ViewProvider cleans up all teammates of this lead at once.
-      this.markAgentWaiting(agent, agentId, webview);
+      this.markAgentWaiting(agent, agentId, sink);
       this.lifecycleCallbacks.onSessionEnd?.(agentId, reason ?? 'unknown');
     }
   }
 
   /**
    * Handle PreToolUse: instantly mark agent as active (cancel waiting state).
-   * JSONL still handles detailed tool tracking (toolId, status text, webview messages).
+   * JSONL still handles detailed tool tracking (toolId, status text, sink messages).
    * This just ensures the character starts animating without waiting for the 500ms JSONL poll.
    */
   private handlePreToolUse(
     normEvent: Extract<AgentEvent, { kind: 'toolStart' }>,
     agent: AgentState,
     agentId: number,
-    webview: vscode.Webview | undefined,
+    sink: AgentEventSink,
   ): void {
     const toolName = normEvent.toolName;
     const toolInput = (normEvent.input as Record<string, unknown> | undefined) ?? {};
@@ -430,13 +429,13 @@ export class HookEventHandler {
     agent.permissionSent = false;
     agent.hadToolsInTurn = true;
 
-    // Send tool start + active state to webview (instant, no 500ms JSONL delay).
+    // Send tool start + active state to sink (instant, no 500ms JSONL delay).
     // Skip for Task/Agent tools — their sub-agent characters need the stable JSONL
     // tool ID (not the transient hook ID) so that SubagentStop/tool_result cleanup
     // can find and remove them. JSONL handles agentToolStart (with runInBackground)
     // for these tools.
     if (toolName !== 'Task' && toolName !== 'Agent') {
-      webview?.postMessage({
+      sink.post({
         type: 'agentToolStart',
         id: agentId,
         toolId: hookToolId,
@@ -444,7 +443,7 @@ export class HookEventHandler {
         toolName,
       });
     }
-    webview?.postMessage({
+    sink.post({
       type: 'agentStatus',
       id: agentId,
       status: 'active',
@@ -456,15 +455,11 @@ export class HookEventHandler {
    * Stop hook handles the idle transition. This is here for completeness and
    * to serve as a confirmation event for pending external sessions.
    */
-  private handlePostToolUse(
-    agent: AgentState,
-    agentId: number,
-    webview: vscode.Webview | undefined,
-  ): void {
+  private handlePostToolUse(agent: AgentState, agentId: number, sink: AgentEventSink): void {
     if (agent.currentHookToolId) {
       // Suppress tool display when lead has inline teammates (see handlePreToolUse)
       if (!hasInlineTeammates(agentId, this.agents)) {
-        webview?.postMessage({
+        sink.post({
           type: 'agentToolDone',
           id: agentId,
           toolId: agent.currentHookToolId,
@@ -480,7 +475,7 @@ export class HookEventHandler {
   // the 'toolEnd' AgentEvent kind and share handlePostToolUse.
 
   /**
-   * Handle SubagentStart: notify webview that a sub-agent is spawning.
+   * Handle SubagentStart: notify sink that a sub-agent is spawning.
    *
    * For Agent Teams teammates (Agent tool with run_in_background), triggers
    * teammate discovery via lifecycle callback -- teammates become independent
@@ -493,7 +488,7 @@ export class HookEventHandler {
     event: HookEvent,
     agent: AgentState,
     agentId: number,
-    webview: vscode.Webview | undefined,
+    sink: AgentEventSink,
   ): void {
     const agentType = this.provider.team?.extractTeammateNameFromEvent(event) ?? 'unknown';
 
@@ -546,7 +541,7 @@ export class HookEventHandler {
     }
     subNames.set(subToolId, agentType);
 
-    webview?.postMessage({
+    sink.post({
       type: 'subagentToolStart',
       id: agentId,
       parentToolId,
@@ -556,18 +551,14 @@ export class HookEventHandler {
   }
 
   /**
-   * Handle SubagentStop: notify webview that a sub-agent finished.
+   * Handle SubagentStop: notify sink that a sub-agent finished.
    *
    * For Agent Teams teammates: marks all teammate agents as waiting (they're
    * independent agents, not sub-agent characters to destroy).
    *
    * For old-style Task subagents: removes the child character from the office.
    */
-  private handleSubagentStop(
-    agent: AgentState,
-    agentId: number,
-    webview: vscode.Webview | undefined,
-  ): void {
+  private handleSubagentStop(agent: AgentState, agentId: number, sink: AgentEventSink): void {
     // Check if this agent has inline teammates (independent agents with leadAgentId).
     // Just mark them waiting -- SubagentStop fires per-task-iteration; teammates may
     // sit idle for minutes between lead requests before being re-invoked.
@@ -582,7 +573,7 @@ export class HookEventHandler {
           `[Pixel Agents] Hook: Agent ${agentId} - SubagentStop: marking inline teammates as waiting`,
         );
       for (const [id, a] of inlineTeammates) {
-        this.markAgentWaiting(a, id, webview);
+        this.markAgentWaiting(a, id, sink);
       }
       return;
     }
@@ -603,7 +594,7 @@ export class HookEventHandler {
 
     agent.activeSubagentToolIds.delete(parentToolId);
     agent.activeSubagentToolNames.delete(parentToolId);
-    webview?.postMessage({
+    sink.post({
       type: 'subagentClear',
       id: agentId,
       parentToolId,
@@ -611,11 +602,7 @@ export class HookEventHandler {
   }
 
   /** Handle PermissionRequest: cancel heuristic timer, show permission bubble on agent + sub-agents. */
-  private handlePermissionRequest(
-    agent: AgentState,
-    agentId: number,
-    webview: vscode.Webview | undefined,
-  ): void {
+  private handlePermissionRequest(agent: AgentState, agentId: number, sink: AgentEventSink): void {
     // When lead has inline teammates, route permission to the teammates instead.
     // The hook fires on the lead's session_id but the permission is for a teammate.
     const inlineTeammates = getInlineTeammates(agentId, this.agents);
@@ -623,20 +610,20 @@ export class HookEventHandler {
       for (const [id, a] of inlineTeammates) {
         cancelPermissionTimer(id, this.permissionTimers);
         a.permissionSent = true;
-        webview?.postMessage({ type: 'agentToolPermission', id });
+        sink.post({ type: 'agentToolPermission', id });
       }
       return;
     }
 
     cancelPermissionTimer(agentId, this.permissionTimers);
     agent.permissionSent = true;
-    webview?.postMessage({
+    sink.post({
       type: 'agentToolPermission',
       id: agentId,
     });
     // Also notify any sub-agents with active tools
     for (const parentToolId of agent.activeSubagentToolNames.keys()) {
-      webview?.postMessage({
+      sink.post({
         type: 'subagentToolPermission',
         id: agentId,
         parentToolId,
@@ -645,12 +632,8 @@ export class HookEventHandler {
   }
 
   /** Handle Stop: Claude finished responding, mark agent as waiting. */
-  private handleStop(
-    agent: AgentState,
-    agentId: number,
-    webview: vscode.Webview | undefined,
-  ): void {
-    this.markAgentWaiting(agent, agentId, webview);
+  private handleStop(agent: AgentState, agentId: number, sink: AgentEventSink): void {
+    this.markAgentWaiting(agent, agentId, sink);
   }
 
   /**
@@ -663,14 +646,14 @@ export class HookEventHandler {
     event: HookEvent,
     agent: AgentState,
     agentId: number,
-    webview: vscode.Webview | undefined,
+    sink: AgentEventSink,
   ): void {
     const agentType = this.provider.team?.extractTeammateNameFromEvent(event);
     const inlineTeammates = getInlineTeammates(agentId, this.agents);
 
     if (inlineTeammates.length === 0) {
       // No inline teammates — treat as a regular idle signal for this agent
-      this.markAgentWaiting(agent, agentId, webview);
+      this.markAgentWaiting(agent, agentId, sink);
       return;
     }
 
@@ -681,7 +664,7 @@ export class HookEventHandler {
         const [id, a] = match;
         if (debug)
           console.log(`[Pixel Agents] Hook: TeammateIdle "${agentType}" -> teammate Agent ${id}`);
-        this.markAgentWaiting(a, id, webview);
+        this.markAgentWaiting(a, id, sink);
         return;
       }
     }
@@ -692,7 +675,7 @@ export class HookEventHandler {
         `[Pixel Agents] Hook: TeammateIdle (no agent_type match) -> marking ${inlineTeammates.length} teammate(s) waiting`,
       );
     for (const [id, a] of inlineTeammates) {
-      this.markAgentWaiting(a, id, webview);
+      this.markAgentWaiting(a, id, sink);
     }
   }
 
@@ -711,32 +694,28 @@ export class HookEventHandler {
     const inlineTeammates = getInlineTeammates(agentId, this.agents);
     if (inlineTeammates.length === 0) return;
 
-    const webview = this.getWebview();
+    const sink = this.getSink();
 
     // Match by agentName if available, otherwise mark all inline teammates waiting
     if (agentType) {
       const match = inlineTeammates.find(([, a]) => a.agentName === agentType);
       if (match) {
         const [id, a] = match;
-        this.markAgentWaiting(a, id, webview);
+        this.markAgentWaiting(a, id, sink);
         return;
       }
     }
     for (const [id, a] of inlineTeammates) {
-      this.markAgentWaiting(a, id, webview);
+      this.markAgentWaiting(a, id, sink);
     }
   }
 
   /**
    * Transition agent to waiting state. Clears foreground tools (preserves background
-   * agents), cancels timers, and notifies the webview. Same logic as the turn_duration
+   * agents), cancels timers, and notifies the sink. Same logic as the turn_duration
    * handler in transcriptParser.ts.
    */
-  private markAgentWaiting(
-    agent: AgentState,
-    agentId: number,
-    webview: vscode.Webview | undefined,
-  ): void {
+  private markAgentWaiting(agent: AgentState, agentId: number, sink: AgentEventSink): void {
     cancelWaitingTimer(agentId, this.waitingTimers);
     cancelPermissionTimer(agentId, this.permissionTimers);
 
@@ -756,12 +735,12 @@ export class HookEventHandler {
         agent.activeSubagentToolNames.delete(toolId);
       }
     }
-    webview?.postMessage({ type: 'agentToolsClear', id: agentId });
+    sink.post({ type: 'agentToolsClear', id: agentId });
     // Re-send background agent tools to restore them after the clear
     for (const toolId of agent.backgroundAgentToolIds) {
       const status = agent.activeToolStatuses.get(toolId);
       if (status) {
-        webview?.postMessage({
+        sink.post({
           type: 'agentToolStart',
           id: agentId,
           toolId,
@@ -773,7 +752,7 @@ export class HookEventHandler {
     agent.isWaiting = true;
     agent.permissionSent = false;
     agent.hadToolsInTurn = false;
-    webview?.postMessage({
+    sink.post({
       type: 'agentStatus',
       id: agentId,
       status: 'waiting',
