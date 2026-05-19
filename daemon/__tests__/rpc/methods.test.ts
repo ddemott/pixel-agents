@@ -50,7 +50,7 @@ async function makeCtx(): Promise<{
     layoutDebouncer: new LayoutSaveDebouncer(OURS, 10),
     state: {
       layout: null,
-      config: { externalAssetDirectories: [] } as PixelAgentsConfig,
+      config: { externalAssetDirectories: [], logLevel: 'info' } as PixelAgentsConfig,
     },
     triggerShutdown: vi.fn(),
   };
@@ -118,7 +118,7 @@ describe('layout methods', () => {
 describe('settings methods', () => {
   it('settings.get returns the current config', async () => {
     const { ctx, registry } = await makeCtx();
-    ctx.state.config = { externalAssetDirectories: ['/a', '/b'] };
+    ctx.state.config = { externalAssetDirectories: ['/a', '/b'], logLevel: 'info' };
     const res = await registry.dispatch(1, 'settings.get', {}, makeScope(), ctx);
     expect(res.ok).toBe(true);
     if (res.ok)

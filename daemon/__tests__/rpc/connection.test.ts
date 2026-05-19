@@ -31,7 +31,7 @@ function emptyDispatchContext(): DispatchContext {
     sink: { post: () => {}, register: () => 0, unregister: () => {}, size: () => 0 } as never,
     agents: { forCwd: () => [] } as never,
     layoutDebouncer: { schedule: () => {}, flushNow: () => {}, dispose: () => {} } as never,
-    state: { layout: null, config: { externalAssetDirectories: [] } },
+    state: { layout: null, config: { externalAssetDirectories: [], logLevel: 'info' } },
     triggerShutdown: () => {},
   };
 }

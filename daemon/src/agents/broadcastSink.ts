@@ -1,6 +1,7 @@
 import type { Socket } from 'net';
 
 import type { AgentEvent, AgentEventSink } from '../../../src/messageSender.js';
+import { createNullLogger, type Logger } from '../logging/logger.js';
 import { encodeNdjson, FramingError } from '../rpc/framing.js';
 import type { Evt } from '../rpc/wire.js';
 
@@ -55,6 +56,12 @@ export class BroadcastSink implements AgentEventSink {
   private readonly conns = new Map<number, Subscriber>();
   private nextConnId = 1;
   private readonly seqByTopic = new Map<string, number>();
+  private logger: Logger = createNullLogger();
+
+  /** Inject the daemon logger after it has been built in server.ts boot. */
+  setLogger(logger: Logger): void {
+    this.logger = logger;
+  }
 
   /**
    * Register a freshly-authed socket. The subscription set is shared by
@@ -141,7 +148,10 @@ export class BroadcastSink implements AgentEventSink {
       return encodeNdjson(evt);
     } catch (e) {
       if (e instanceof FramingError) {
-        console.error(`[BroadcastSink] dropped oversize event topic=${topic}: ${e.message}`);
+        this.logger.error(
+          { module: 'broadcastSink', topic, reason: e.message },
+          'dropped oversize event',
+        );
         return null;
       }
       throw e;

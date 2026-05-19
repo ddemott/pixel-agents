@@ -1,8 +1,17 @@
 import * as os from 'os';
 import * as path from 'path';
 
-/** Shared root directory for all Pixel Agents runtime state. */
-export const PIXEL_AGENTS_DIR = path.join(os.homedir(), '.pixel-agents');
+/**
+ * Shared root directory for all Pixel Agents runtime state.
+ *
+ * Set `PIXEL_AGENTS_HOME` to point the entire on-disk layout (daemon.json,
+ * socket, logs, config, layout, agents.json, ...) at an alternate directory.
+ * Used by the hook integration test to isolate from the developer's real
+ * daemon. Resolved once at process start — children forked later in the
+ * same process will inherit, but a re-read of the env var won't change it.
+ */
+export const PIXEL_AGENTS_DIR =
+  process.env.PIXEL_AGENTS_HOME ?? path.join(os.homedir(), '.pixel-agents');
 
 /** Daemon discovery file (port, PID, auth token, bootId, socket path). */
 export const DAEMON_JSON_PATH = path.join(PIXEL_AGENTS_DIR, 'daemon.json');

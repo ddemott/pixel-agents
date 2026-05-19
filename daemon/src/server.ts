@@ -17,8 +17,12 @@ import {
   readDiscovery,
   writeDiscovery,
 } from './discovery.js';
+import { DaemonHookBridge } from './hookHost/bridge.js';
+import { type HookHTTPServerHandle, startHookServer } from './hookHost/server.js';
 import { LayoutSaveDebouncer, readLayout, watchLayout } from './layout/persistence.js';
-import { DAEMON_SOCKET_PATH, DAEMON_STATE_PATH } from './paths.js';
+import { createFileLogger, type Logger } from './logging/logger.js';
+import { sweepLogs } from './logging/retention.js';
+import { DAEMON_LOG_DIR, DAEMON_SOCKET_PATH, DAEMON_STATE_PATH } from './paths.js';
 import type { WriterTag } from './persistence/writerTag.js';
 import { attachConnection } from './rpc/connection.js';
 import type { DispatchContext } from './rpc/dispatch.js';
@@ -27,6 +31,9 @@ import type { WorldSnapshot } from './rpc/wire.js';
 
 const DAEMON_VERSION = '0.0.1';
 const BOOT_TIMEOUT_MS = 3000;
+const LOG_GZIP_AFTER_DAYS = 7;
+const LOG_DELETE_AFTER_DAYS = 30;
+const LOG_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 interface BootOptions {
   foreground: boolean;
@@ -89,20 +96,36 @@ async function main(): Promise<void> {
   ensurePixelAgentsDir();
 
   const config = readConfig();
-  console.log(
-    `[Daemon] Config loaded: externalAssetDirectories=${config.externalAssetDirectories.length}`,
+
+  // Boot the file logger before anything else so config-load + discovery
+  // events land in the NDJSON log. `--foreground` also mirrors to stderr so
+  // operators get live feedback without `tail -f`.
+  const logger: Logger = createFileLogger({
+    dir: DAEMON_LOG_DIR,
+    prefix: 'daemon',
+    level: config.logLevel,
+    mirror: opts.foreground ? process.stderr : undefined,
+  });
+  logger.info(
+    {
+      module: 'boot',
+      externalAssetDirectories: config.externalAssetDirectories.length,
+      logLevel: config.logLevel,
+    },
+    'config loaded',
   );
 
   const state = checkExistingDaemon();
   if (state === 'owned-by-live-pid') {
     const existing = readDiscovery();
-    console.error(
-      `[Daemon] Another daemon is already running (pid=${existing?.pid}, bootId=${existing?.bootId}). Refusing to start.`,
+    logger.error(
+      { module: 'boot', existingPid: existing?.pid, existingBootId: existing?.bootId },
+      'another daemon is already running; refusing to start',
     );
     process.exit(1);
   }
   if (state === 'stale') {
-    console.log('[Daemon] Found stale daemon.json — overwriting.');
+    logger.info({ module: 'boot' }, 'found stale daemon.json — overwriting');
   }
 
   const discovery: DaemonDiscovery = {
@@ -119,7 +142,7 @@ async function main(): Promise<void> {
   const bootDeadline = Date.now() + BOOT_TIMEOUT_MS;
   const server = await bindSocket();
   if (Date.now() > bootDeadline) {
-    console.warn(`[Daemon] Boot took longer than ${BOOT_TIMEOUT_MS}ms`);
+    logger.warn({ module: 'boot', timeoutMs: BOOT_TIMEOUT_MS }, 'boot took longer than expected');
   }
 
   writeDiscovery(discovery);
@@ -135,11 +158,26 @@ async function main(): Promise<void> {
   //    own-writes are filtered via the writer tag.
   // TerminalRegistry stays Null until node-pty hosting lands in Day 13-14.
   const sink = new BroadcastSink();
+  sink.setLogger(logger);
   const stateStore = new FileStateStore(DAEMON_STATE_PATH);
   const agents = new AgentsRegistry(ours);
   setAgentRuntime(new DaemonRuntime(process.cwd()));
   void stateStore;
   void agents;
+
+  // Hook HTTP server lives on 127.0.0.1 only and reuses the UDS auth token.
+  // The bridge maps incoming hook events to agent.* topics on the sink so a
+  // mock client subscribed to `agent:*` sees toolStart/toolDone/etc. in real
+  // time. Boot order: sink → bridge → http server → republish daemon.json
+  // with the bound port so hook scripts can find us.
+  const hookBridge = new DaemonHookBridge(sink, logger);
+  const hookHandle: HookHTTPServerHandle = await startHookServer({
+    token: discovery.token,
+    onEvent: (providerId, event) => hookBridge.handleEvent(providerId, event),
+    logger,
+  });
+  discovery.hookPort = hookHandle.port;
+  writeDiscovery(discovery);
 
   const sharedState: DispatchContext['state'] = {
     layout: readLayout(),
@@ -153,8 +191,38 @@ async function main(): Promise<void> {
 
   const configWatcher = watchConfig(ours, (next) => {
     sharedState.config = next;
+    if (next.logLevel !== sharedState.config.logLevel) {
+      logger.info(
+        { module: 'config', logLevel: next.logLevel },
+        'log level updated from external write',
+      );
+    }
+    logger.setLevel(next.logLevel);
     sink.post({ type: 'settings.updated', settings: next });
   });
+
+  // Retention sweep: gz @ 7d, delete @ 30d. Run once at boot, then daily.
+  const runSweep = (): void => {
+    const result = sweepLogs({
+      dir: DAEMON_LOG_DIR,
+      gzipAfterDays: LOG_GZIP_AFTER_DAYS,
+      deleteAfterDays: LOG_DELETE_AFTER_DAYS,
+    });
+    if (result.gzipped.length || result.deleted.length || result.errors.length) {
+      logger.info(
+        {
+          module: 'logRetention',
+          gzipped: result.gzipped.length,
+          deleted: result.deleted.length,
+          errors: result.errors.length,
+        },
+        'log retention sweep complete',
+      );
+    }
+  };
+  runSweep();
+  const sweepTimer = setInterval(runSweep, LOG_SWEEP_INTERVAL_MS);
+  sweepTimer.unref();
 
   const layoutDebouncer = new LayoutSaveDebouncer(ours);
   const registry = buildMethodRegistry();
@@ -193,18 +261,27 @@ async function main(): Promise<void> {
     });
   });
 
-  console.log(
-    `[Daemon] Started pid=${process.pid} bootId=${discovery.bootId.slice(0, 8)} socket=${DAEMON_SOCKET_PATH}`,
+  logger.info(
+    {
+      module: 'boot',
+      pid: process.pid,
+      bootId: discovery.bootId,
+      socket: DAEMON_SOCKET_PATH,
+      hookPort: hookHandle.port,
+    },
+    'daemon started',
   );
 
   let shuttingDown = false;
   shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`[Daemon] Received ${signal}, shutting down.`);
+    logger.info({ module: 'shutdown', signal }, 'shutting down');
+    clearInterval(sweepTimer);
     layoutDebouncer.flushNow();
     layoutWatcher.dispose();
     configWatcher.dispose();
+    void hookHandle.close();
     server.close(() => {
       clearDiscoveryIfOwned(process.pid);
       try {
@@ -212,10 +289,14 @@ async function main(): Promise<void> {
       } catch {
         // best effort
       }
+      logger.close();
       process.exit(0);
     });
     // Hard-kill if close() hangs (orphaned client connections, etc.)
-    setTimeout(() => process.exit(0), 2000).unref();
+    setTimeout(() => {
+      logger.close();
+      process.exit(0);
+    }, 2000).unref();
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -228,6 +309,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
+  // Logger may not have been built yet when this throws; fall back to stderr
+  // so the supervisor / launcher always sees fatal boot errors.
   console.error('[Daemon] Fatal:', err);
   process.exit(1);
 });
