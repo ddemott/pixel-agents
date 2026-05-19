@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AgentsRegistry, type PersistedAgent } from '../../src/agents/registry.js';
+import { type PersistedAgent } from '../../src/agents/registry.js';
 import type { WriterTag } from '../../src/persistence/writerTag.js';
 
 const OURS: WriterTag = { processId: 1, bootId: 'boot-test' };
