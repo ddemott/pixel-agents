@@ -3,6 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
 use crate::office::tile_map::{find_path, TileMap};
 use crate::office::types::*;
@@ -41,19 +43,23 @@ fn direction_between(from_col: i32, from_row: i32, to_col: i32, to_row: i32) -> 
 // ── Character creation ────────────────────────────────────────────────────────
 
 /// Create a new character. Starts in TYPE state (active) at the given seat, or
-/// at (1,1) if no seat provided. `rng` seeds the initial wander_limit.
+/// at (1,1) if no seat provided. The character's per-agent wander RNG is seeded
+/// `world_seed ^ id` (arch §298) and drives the initial `wander_limit`.
 pub fn create_character(
     id: i32,
     palette: u8,
     hue_shift: i32,
     seat_id: Option<String>,
     seat: Option<&Seat>,
-    rng: &mut impl Rng,
+    world_seed: u32,
 ) -> Character {
     let (col, row, dir) = seat
         .map(|s| (s.seat_col, s.seat_row, s.facing_dir))
         .unwrap_or((1, 1, Direction::Down));
     let (cx, cy) = tile_center(col, row);
+
+    let mut rng = SmallRng::seed_from_u64(agent_rng_seed(world_seed, id));
+    let wander_limit = rng.gen_range(WANDER_MOVES_BEFORE_REST_MIN..=WANDER_MOVES_BEFORE_REST_MAX);
 
     Character {
         id,
@@ -73,7 +79,7 @@ pub fn create_character(
         current_tool: None,
         wander_timer: 0.0,
         wander_count: 0,
-        wander_limit: rng.gen_range(WANDER_MOVES_BEFORE_REST_MIN..=WANDER_MOVES_BEFORE_REST_MAX),
+        wander_limit,
         is_active: true,
         bubble_type: None,
         bubble_timer: 0.0,
@@ -83,6 +89,7 @@ pub fn create_character(
         matrix_effect: None,
         matrix_effect_timer: 0.0,
         matrix_effect_seeds: [0.0; 16],
+        rng,
     }
 }
 
@@ -99,7 +106,6 @@ pub fn update_character(
     seats: &BTreeMap<String, Seat>,
     tile_map: &TileMap,
     blocked: &BTreeSet<(i32, i32)>,
-    rng: &mut impl Rng,
 ) {
     ch.frame_timer += dt;
 
@@ -121,10 +127,10 @@ pub fn update_character(
                 ch.state = CharacterState::Idle;
                 ch.frame = 0;
                 ch.frame_timer = 0.0;
-                ch.wander_timer = rng.gen_range(WANDER_PAUSE_MIN_SEC..WANDER_PAUSE_MAX_SEC);
+                ch.wander_timer = ch.rng.gen_range(WANDER_PAUSE_MIN_SEC..WANDER_PAUSE_MAX_SEC);
                 ch.wander_count = 0;
                 ch.wander_limit =
-                    rng.gen_range(WANDER_MOVES_BEFORE_REST_MIN..=WANDER_MOVES_BEFORE_REST_MAX);
+                    ch.rng.gen_range(WANDER_MOVES_BEFORE_REST_MIN..=WANDER_MOVES_BEFORE_REST_MAX);
             }
         }
 
@@ -189,7 +195,7 @@ pub fn update_character(
                             ch.frame = 0;
                             ch.frame_timer = 0.0;
                             ch.wander_timer =
-                                rng.gen_range(WANDER_PAUSE_MIN_SEC..WANDER_PAUSE_MAX_SEC);
+                                ch.rng.gen_range(WANDER_PAUSE_MIN_SEC..WANDER_PAUSE_MAX_SEC);
                             return;
                         }
                     }
@@ -197,7 +203,7 @@ pub fn update_character(
 
                 // Wander to a random walkable tile
                 if !walkable_tiles.is_empty() {
-                    let idx = rng.gen_range(0..walkable_tiles.len());
+                    let idx = ch.rng.gen_range(0..walkable_tiles.len());
                     let target = walkable_tiles[idx];
                     let path = find_path(
                         ch.tile_col,
@@ -216,7 +222,7 @@ pub fn update_character(
                         ch.wander_count += 1;
                     }
                 }
-                ch.wander_timer = rng.gen_range(WANDER_PAUSE_MIN_SEC..WANDER_PAUSE_MAX_SEC);
+                ch.wander_timer = ch.rng.gen_range(WANDER_PAUSE_MIN_SEC..WANDER_PAUSE_MAX_SEC);
             }
         }
 
@@ -266,18 +272,18 @@ pub fn update_character(
                         ch.seat_timer = if ch.seat_timer < 0.0 {
                             0.0
                         } else {
-                            rng.gen_range(SEAT_REST_MIN_SEC..SEAT_REST_MAX_SEC)
+                            ch.rng.gen_range(SEAT_REST_MIN_SEC..SEAT_REST_MAX_SEC)
                         };
                         ch.wander_count = 0;
                         ch.wander_limit =
-                            rng.gen_range(WANDER_MOVES_BEFORE_REST_MIN..=WANDER_MOVES_BEFORE_REST_MAX);
+                            ch.rng.gen_range(WANDER_MOVES_BEFORE_REST_MIN..=WANDER_MOVES_BEFORE_REST_MAX);
                         ch.frame = 0;
                         ch.frame_timer = 0.0;
                         return;
                     } else {
                         ch.state = CharacterState::Idle;
                         ch.wander_timer =
-                            rng.gen_range(WANDER_PAUSE_MIN_SEC..WANDER_PAUSE_MAX_SEC);
+                            ch.rng.gen_range(WANDER_PAUSE_MIN_SEC..WANDER_PAUSE_MAX_SEC);
                     }
                 }
                 ch.frame = 0;
@@ -344,12 +350,8 @@ pub fn update_character(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
-    use rand::rngs::SmallRng;
 
-    fn seeded() -> SmallRng {
-        SmallRng::seed_from_u64(42)
-    }
+    const TEST_SEED: u32 = 42;
 
     fn make_seat(uid: &str, col: i32, row: i32) -> Seat {
         Seat { uid: uid.to_string(), seat_col: col, seat_row: row, facing_dir: Direction::Down, assigned: true }
@@ -357,9 +359,8 @@ mod tests {
 
     #[test]
     fn create_character_starts_type_active() {
-        let mut rng = seeded();
         let seat = make_seat("s1", 2, 2);
-        let ch = create_character(1, 0, 0, Some("s1".into()), Some(&seat), &mut rng);
+        let ch = create_character(1, 0, 0, Some("s1".into()), Some(&seat), TEST_SEED);
         assert_eq!(ch.state, CharacterState::Type);
         assert!(ch.is_active);
         assert_eq!(ch.tile_col, 2);
@@ -368,16 +369,15 @@ mod tests {
 
     #[test]
     fn type_inactive_sentinel_transitions_to_idle_immediately() {
-        let mut rng = seeded();
         let seat = make_seat("s1", 2, 2);
-        let mut ch = create_character(1, 0, 0, Some("s1".into()), Some(&seat), &mut rng);
+        let mut ch = create_character(1, 0, 0, Some("s1".into()), Some(&seat), TEST_SEED);
         ch.is_active = false;
         ch.seat_timer = -1.0; // sentinel from setAgentActive(false)
 
         let seats = BTreeMap::new();
         let tile_map = crate::office::tile_map::TileMap::new(1, 1, vec![TileType::Void]);
         let blocked = BTreeSet::new();
-        update_character(&mut ch, 0.016, &[], &seats, &tile_map, &blocked, &mut rng);
+        update_character(&mut ch, 0.016, &[], &seats, &tile_map, &blocked);
 
         assert_eq!(ch.state, CharacterState::Idle);
         assert_eq!(ch.seat_timer, 0.0);
@@ -385,16 +385,15 @@ mod tests {
 
     #[test]
     fn seat_timer_positive_delays_idle_transition() {
-        let mut rng = seeded();
         let seat = make_seat("s1", 2, 2);
-        let mut ch = create_character(1, 0, 0, Some("s1".into()), Some(&seat), &mut rng);
+        let mut ch = create_character(1, 0, 0, Some("s1".into()), Some(&seat), TEST_SEED);
         ch.is_active = false;
         ch.seat_timer = 1.0; // 1 second rest remaining
 
         let seats = BTreeMap::new();
         let tile_map = crate::office::tile_map::TileMap::new(1, 1, vec![TileType::Void]);
         let blocked = BTreeSet::new();
-        update_character(&mut ch, 0.016, &[], &seats, &tile_map, &blocked, &mut rng);
+        update_character(&mut ch, 0.016, &[], &seats, &tile_map, &blocked);
 
         // Still TYPE, timer decremented
         assert_eq!(ch.state, CharacterState::Type);

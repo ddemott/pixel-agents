@@ -3,6 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
 use crate::office::catalog::FurnitureCatalog;
 use crate::office::characters::{create_character, tile_center, update_character};
@@ -31,6 +33,14 @@ pub struct OfficeState {
     subagent_id_map: BTreeMap<String, i32>,
     subagent_meta: BTreeMap<i32, SubagentMeta>,
     next_subagent_id: i32,
+    /// Daemon-issued FSM seed (arch §292). Each agent derives its own wander RNG
+    /// from `world_seed ^ agentId`, so two clients sharing this seed reproduce
+    /// identical per-agent motion regardless of join order.
+    world_seed: u32,
+    /// World-level RNG used only for the `pick_diverse_palette` fallback. NOTE:
+    /// this path is *not* parity-guaranteed across clients with divergent
+    /// add-order — palette/hueShift normally come from the daemon agent registry.
+    world_rng: SmallRng,
 }
 
 struct SubagentMeta {
@@ -39,7 +49,7 @@ struct SubagentMeta {
 }
 
 impl OfficeState {
-    pub fn new(catalog: FurnitureCatalog, layout: OfficeLayout) -> Self {
+    pub fn new(catalog: FurnitureCatalog, layout: OfficeLayout, world_seed: u32) -> Self {
         let tile_map = layout_to_tile_map(&layout);
         let seats = layout_to_seats(&layout.furniture, &catalog);
         let blocked = get_blocked_tiles(&layout.furniture, &catalog, None);
@@ -61,6 +71,8 @@ impl OfficeState {
             subagent_id_map: BTreeMap::new(),
             subagent_meta: BTreeMap::new(),
             next_subagent_id: -1,
+            world_seed,
+            world_rng: SmallRng::seed_from_u64(world_seed as u64),
         }
     }
 
@@ -143,14 +155,13 @@ impl OfficeState {
         preferred_hue_shift: Option<i32>,
         preferred_seat_id: Option<&str>,
         skip_spawn_effect: bool,
-        rng: &mut impl Rng,
     ) {
         if self.characters.contains_key(&id) { return; }
 
         let (palette, hue_shift) = if let Some(p) = preferred_palette {
             (p, preferred_hue_shift.unwrap_or(0))
         } else {
-            pick_diverse_palette(&self.characters, rng)
+            pick_diverse_palette(&self.characters, &mut self.world_rng)
         };
 
         let seat_id = preferred_seat_id
@@ -170,10 +181,10 @@ impl OfficeState {
                     assigned: true,
                 }
             };
-            create_character(id, palette, hue_shift, Some(sid.clone()), Some(&seat_info), rng)
+            create_character(id, palette, hue_shift, Some(sid.clone()), Some(&seat_info), self.world_seed)
         } else {
             let spawn = self.walkable_tiles.first().copied().unwrap_or((1, 1));
-            let mut c = create_character(id, palette, hue_shift, None, None, rng);
+            let mut c = create_character(id, palette, hue_shift, None, None, self.world_seed);
             let (cx, cy) = tile_center(spawn.0, spawn.1);
             c.x = cx;
             c.y = cy;
@@ -185,13 +196,13 @@ impl OfficeState {
         if !skip_spawn_effect {
             ch.matrix_effect = Some(MatrixEffectKind::Spawn);
             ch.matrix_effect_timer = 0.0;
-            ch.matrix_effect_seeds = matrix_effect_seeds(rng);
+            ch.matrix_effect_seeds = matrix_effect_seeds(&mut ch.rng);
         }
 
         self.characters.insert(id, ch);
     }
 
-    pub fn remove_agent(&mut self, id: i32, rng: &mut impl Rng) {
+    pub fn remove_agent(&mut self, id: i32) {
         let Some(ch) = self.characters.get_mut(&id) else { return };
         if ch.matrix_effect == Some(MatrixEffectKind::Despawn) { return; }
 
@@ -205,7 +216,7 @@ impl OfficeState {
 
         ch.matrix_effect = Some(MatrixEffectKind::Despawn);
         ch.matrix_effect_timer = 0.0;
-        ch.matrix_effect_seeds = matrix_effect_seeds(rng);
+        ch.matrix_effect_seeds = matrix_effect_seeds(&mut ch.rng);
         ch.bubble_type = None;
     }
 
@@ -272,7 +283,6 @@ impl OfficeState {
         &mut self,
         parent_agent_id: i32,
         parent_tool_id: &str,
-        rng: &mut impl Rng,
     ) -> i32 {
         let key = format!("{}:{}", parent_agent_id, parent_tool_id);
         if let Some(&existing) = self.subagent_id_map.get(&key) {
@@ -299,7 +309,7 @@ impl OfficeState {
             .copied()
             .unwrap_or((p_col, p_row));
 
-        let mut ch = create_character(id, palette, hue_shift, None, None, rng);
+        let mut ch = create_character(id, palette, hue_shift, None, None, self.world_seed);
         let (cx, cy) = tile_center(spawn.0, spawn.1);
         ch.x = cx;
         ch.y = cy;
@@ -310,7 +320,7 @@ impl OfficeState {
         ch.parent_agent_id = Some(parent_agent_id);
         ch.matrix_effect = Some(MatrixEffectKind::Spawn);
         ch.matrix_effect_timer = 0.0;
-        ch.matrix_effect_seeds = matrix_effect_seeds(rng);
+        ch.matrix_effect_seeds = matrix_effect_seeds(&mut ch.rng);
 
         self.characters.insert(id, ch);
         self.subagent_id_map.insert(key, id);
@@ -321,7 +331,7 @@ impl OfficeState {
         id
     }
 
-    pub fn remove_subagent(&mut self, parent_agent_id: i32, parent_tool_id: &str, rng: &mut impl Rng) {
+    pub fn remove_subagent(&mut self, parent_agent_id: i32, parent_tool_id: &str) {
         let key = format!("{}:{}", parent_agent_id, parent_tool_id);
         let Some(&id) = self.subagent_id_map.get(&key) else { return };
 
@@ -333,7 +343,7 @@ impl OfficeState {
             }
             ch.matrix_effect = Some(MatrixEffectKind::Despawn);
             ch.matrix_effect_timer = 0.0;
-            ch.matrix_effect_seeds = matrix_effect_seeds(rng);
+            ch.matrix_effect_seeds = matrix_effect_seeds(&mut ch.rng);
             ch.bubble_type = None;
         }
         self.subagent_id_map.remove(&key);
@@ -351,7 +361,7 @@ impl OfficeState {
     // ── Simulation tick ───────────────────────────────────────────────────────
 
     /// Advance the simulation by `dt` seconds.
-    pub fn tick(&mut self, dt: f32, rng: &mut impl Rng) {
+    pub fn tick(&mut self, dt: f32) {
         // Furniture animation frame cycling
         let prev = (self.furniture_anim_timer / FURNITURE_ANIM_INTERVAL_SEC) as u32;
         self.furniture_anim_timer += dt;
@@ -413,7 +423,6 @@ impl OfficeState {
                 &self.seats,
                 &self.tile_map,
                 &blocked,
-                rng,
             );
         }
 
@@ -491,24 +500,17 @@ fn pick_diverse_palette(characters: &BTreeMap<i32, Character>, rng: &mut impl Rn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
-    use rand::rngs::SmallRng;
-
-    fn seeded() -> SmallRng {
-        SmallRng::seed_from_u64(42)
-    }
 
     fn empty_state() -> OfficeState {
-        OfficeState::new(FurnitureCatalog::empty(), OfficeLayout::empty(5, 5))
+        OfficeState::new(FurnitureCatalog::empty(), OfficeLayout::empty(5, 5), 42)
     }
 
     #[test]
     fn add_and_remove_agent() {
         let mut s = empty_state();
-        let mut rng = seeded();
-        s.add_agent(1, Some(0), Some(0), None, true, &mut rng);
+        s.add_agent(1, Some(0), Some(0), None, true);
         assert!(s.characters.contains_key(&1));
-        s.remove_agent(1, &mut rng);
+        s.remove_agent(1);
         // Character still present (despawn animation pending)
         assert!(s.characters.contains_key(&1));
         assert_eq!(s.characters[&1].matrix_effect, Some(MatrixEffectKind::Despawn));
@@ -517,21 +519,19 @@ mod tests {
     #[test]
     fn tick_removes_despawned_character() {
         let mut s = empty_state();
-        let mut rng = seeded();
-        s.add_agent(1, Some(0), Some(0), None, true, &mut rng);
-        s.remove_agent(1, &mut rng);
+        s.add_agent(1, Some(0), Some(0), None, true);
+        s.remove_agent(1);
         // Advance past despawn duration
-        s.tick(MATRIX_EFFECT_DURATION + 0.01, &mut rng);
+        s.tick(MATRIX_EFFECT_DURATION + 0.01);
         assert!(!s.characters.contains_key(&1));
     }
 
     #[test]
     fn pick_diverse_palette_first_six_unique() {
-        let mut rng = seeded();
         let mut s = empty_state();
         let mut palettes = Vec::new();
         for id in 1..=6 {
-            s.add_agent(id, None, None, None, true, &mut rng);
+            s.add_agent(id, None, None, None, true);
             palettes.push(s.characters[&id].palette);
         }
         // Each palette 0-5 should appear exactly once
@@ -544,8 +544,7 @@ mod tests {
     #[test]
     fn set_agent_active_false_sets_sentinel() {
         let mut s = empty_state();
-        let mut rng = seeded();
-        s.add_agent(1, Some(0), Some(0), None, true, &mut rng);
+        s.add_agent(1, Some(0), Some(0), None, true);
         s.set_agent_active(1, false);
         assert_eq!(s.characters[&1].seat_timer, -1.0);
         assert!(s.characters[&1].path.is_empty());
@@ -554,21 +553,19 @@ mod tests {
     #[test]
     fn subagent_dedup() {
         let mut s = empty_state();
-        let mut rng = seeded();
-        s.add_agent(1, Some(0), Some(0), None, true, &mut rng);
-        let id1 = s.add_subagent(1, "tool-A", &mut rng);
-        let id2 = s.add_subagent(1, "tool-A", &mut rng);
+        s.add_agent(1, Some(0), Some(0), None, true);
+        let id1 = s.add_subagent(1, "tool-A");
+        let id2 = s.add_subagent(1, "tool-A");
         assert_eq!(id1, id2);
     }
 
     #[test]
     fn waiting_bubble_fades() {
         let mut s = empty_state();
-        let mut rng = seeded();
-        s.add_agent(1, Some(0), Some(0), None, true, &mut rng);
+        s.add_agent(1, Some(0), Some(0), None, true);
         s.show_waiting_bubble(1);
         assert_eq!(s.characters[&1].bubble_type, Some(BubbleType::Waiting));
-        s.tick(WAITING_BUBBLE_DURATION_SEC + 0.01, &mut rng);
+        s.tick(WAITING_BUBBLE_DURATION_SEC + 0.01);
         assert_eq!(s.characters[&1].bubble_type, None);
     }
 }

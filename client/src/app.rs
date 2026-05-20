@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use rand::rngs::SmallRng;
-use rand::SeedableRng;
 use futures_util::StreamExt;
 use ratatui::crossterm::event::{
     Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
@@ -15,8 +13,10 @@ use serde_json::json;
 use tokio::time::{interval, Duration, Instant};
 
 use crate::agents::{parse_agent_list, AgentState, AgentStatus};
+use crate::assets::AssetStore;
 use crate::chrome::{self, ChromeAction};
-use crate::daemon::wire::{ClientCapabilities, Inbound, Req};
+use crate::daemon::wire::{ClientCapabilities, Inbound, Req, RenderingCap};
+use crate::render::kitty::KittyUploader;
 use crate::daemon::{framing::Frame, DaemonConn};
 use crate::focus::{tab_press, FocusMode, TabOutcome};
 use crate::keymap::{Action, Keymap};
@@ -31,6 +31,7 @@ enum PendingKind {
     Subscribe,
     AgentList,
     AgentSpawn,
+    AssetBlob,
 }
 
 /// Status message shown in the main area (auto-clears after a few seconds).
@@ -53,9 +54,13 @@ struct AppState {
     connected_boot_id: Option<String>,
     pub reconnect: Option<ReconnectState>,
     /// Office simulation — initialized from the first HelloAck's WorldSnapshot.
+    /// Determinism lives inside `OfficeState`: each agent owns a wander RNG
+    /// seeded `worldSeed ^ agentId`, so no client-wide RNG is threaded here.
     office: Option<crate::office::state::OfficeState>,
-    /// Seeded RNG for deterministic office simulation.
-    rng: SmallRng,
+    /// Decoded sprite store, populated from the daemon's 0x02 asset channel.
+    assets: AssetStore,
+    /// Tracks Kitty image uploads (T1-K) so each sprite transmits once.
+    kitty: KittyUploader,
     /// Timestamp of the last rendered frame for dt calculation.
     last_frame: Option<Instant>,
 }
@@ -74,7 +79,8 @@ impl AppState {
             connected_boot_id: None,
             reconnect: None,
             office: None,
-            rng: SmallRng::from_entropy(),
+            assets: AssetStore::new(),
+            kitty: KittyUploader::new(),
             last_frame: None,
         }
     }
@@ -182,13 +188,17 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                         let layout = new_conn.world.get("layout")
                             .and_then(|v| crate::office::layout::parse_layout(v))
                             .unwrap_or_else(|| crate::office::types::OfficeLayout::empty(20, 11));
-                        state.rng = SmallRng::seed_from_u64(world_seed);
-                        state.office = Some(crate::office::state::OfficeState::new(catalog, layout));
+                        state.office = Some(crate::office::state::OfficeState::new(
+                            catalog,
+                            layout,
+                            world_seed as u32,
+                        ));
                         conn = Some(new_conn);
                         state.on_connected(boot_id);
                         let c = conn.as_mut().unwrap();
                         send_subscribe(c, &mut state).await?;
                         send_agent_list(c, &mut state).await?;
+                        request_assets(c, &mut state).await?;
                     }
                     Err(_) => {
                         let rs = state.reconnect.as_mut().unwrap();
@@ -213,7 +223,11 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                             return Err(e);
                         }
                     }
-                    Ok(_) => {} // binary frames (PTY, asset) handled in Phase 3+
+                    Ok(Frame::Asset { asset_id, tier, is_final, bytes }) => {
+                        // Decode failures skip the one sprite; the loop keeps running.
+                        let _ = state.assets.on_frame(asset_id, tier, is_final, &bytes);
+                    }
+                    Ok(_) => {} // PTY frames handled in Phase 4
                     Err(_) => {
                         conn = None;
                         state.on_disconnected();
@@ -257,7 +271,20 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                     .unwrap_or(0.0);
                 state.last_frame = Some(now);
                 if let Some(ref mut office) = state.office {
-                    office.tick(dt, &mut state.rng);
+                    office.tick(dt);
+                }
+                // T1-K: transmit any newly-decoded sprites once. `a=t` is
+                // display-free, so emitting out-of-band of the draw is safe.
+                // (Spatial placement/placeholders land with the Day 17 render
+                // pipeline; this just primes the terminal's image cache.)
+                if matches!(caps.rendering, RenderingCap::KittyK) {
+                    let uploads = state.kitty.pending_uploads(&state.assets);
+                    if !uploads.is_empty() {
+                        use std::io::Write;
+                        let mut out = std::io::stdout();
+                        let _ = out.write_all(&uploads);
+                        let _ = out.flush();
+                    }
                 }
                 tui.draw(|f| render(f, &mut state))?;
             }
@@ -289,6 +316,28 @@ async fn send_agent_list(conn: &mut DaemonConn, state: &mut AppState) -> Result<
         params: None,
     };
     conn.send(&req).await
+}
+
+/// Request a sprite PNG for every catalog asset over the 0x02 blob channel.
+/// Frames arrive asynchronously and land in `state.assets` via `on_frame`.
+async fn request_assets(conn: &mut DaemonConn, state: &mut AppState) -> Result<()> {
+    let ids: Vec<String> = match state.office.as_ref() {
+        Some(o) => o.catalog.entries.keys().cloned().collect(),
+        None => return Ok(()),
+    };
+    for id in ids {
+        state.assets.register_request(&id);
+        let req_id = state.next_req_id();
+        state.pending.insert(req_id, PendingKind::AssetBlob);
+        let req = Req {
+            kind: "req",
+            req_id,
+            method: "assets.requestBlob".into(),
+            params: Some(json!({ "assetId": id, "tier": 0 })),
+        };
+        conn.send(&req).await?;
+    }
+    Ok(())
 }
 
 async fn send_agent_spawn(conn: &mut DaemonConn, state: &mut AppState) -> Result<()> {
@@ -334,6 +383,7 @@ async fn handle_daemon_json(
                         state.set_status(format!("Spawn failed: {}", err.message));
                     }
                 }
+                PendingKind::AssetBlob => {} // bytes already streamed over 0x02
             }
         }
         Inbound::Evt(evt) => handle_event_envelope(evt, state),

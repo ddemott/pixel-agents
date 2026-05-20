@@ -129,7 +129,12 @@ webview-ui/src/               — React + TypeScript (Vite)
 client/                       — Rust TUI client (TUI port Phase 2+; Rust 1.95+, Cargo workspace)
   Cargo.toml                  — workspace + package; pins: ratatui 0.30, ratatui-crossterm 0.1, crossterm 0.29, tokio 1, serde/serde_json 1, bytes 1, vte 0.15, tachyonfx 0.25, arboard 3, directories 6, image 0.25, anyhow 1
   src/
-    main.rs                   — Entry: tokio::main → daemon::connect()
+    main.rs                   — Thin bin: tokio::main → caps::detect() → app::run()
+    lib.rs                    — Library crate (pub module tree) so tests/ can import the engine
+    assets.rs                 — Client asset blob ingestion: djb2 stringAssetId (mirrors daemon), per-(numericId,tier) chunk accumulator, PNG→RGBA8 decode (image crate); AssetStore
+    render/
+      kitty.rs                — Tier T1-K Kitty graphics: encode_transmit (a=t chunked base64), encode_virtual_placement (a=p,U=1,X=/Y= sub-cell), placeholder_text (U+10EEEE grid + diacritics + id-in-fg), compute_placement geometry, KittyUploader (per-session dedup), 297-entry DIACRITICS table
+    (also present from Phase 2-3, tracked in TODO.md: caps/, office/, focus.rs, chrome.rs, keymap.rs, agents.rs, reconnect.rs, tui.rs, input_queue.rs, raw_mode.rs)
     daemon/
       mod.rs                  — Re-exports connect()
       wire.rs                 — Wire types mirroring daemon/src/rpc/wire.ts: Hello, HelloAck, ClientCapabilities, CellPx, RenderingCap, Req, Res, WireError, Evt, Fatal, Inbound (internally-tagged serde enum, tag="kind")

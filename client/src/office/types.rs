@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use rand::rngs::SmallRng;
+
 // ── Animation / simulation constants ─────────────────────────────────────────
 
 pub const TILE_SIZE: i32 = 16;
@@ -146,6 +148,19 @@ pub struct Character {
     pub matrix_effect: Option<MatrixEffectKind>,
     pub matrix_effect_timer: f32,
     pub matrix_effect_seeds: [f32; 16],
+    /// Per-agent wander RNG, seeded `worldSeed ^ agentId` (arch §298). Drives all
+    /// random FSM decisions (wander targets, pause/rest timers, matrix seeds) so
+    /// that any two clients sharing `worldSeed` reproduce identical motion for a
+    /// given agent id — independent of how many other agents exist or join order.
+    pub rng: SmallRng,
+}
+
+/// Seed a per-agent RNG from the world seed and agent id (arch §298).
+///
+/// `agent_id` is reinterpreted as `u32` (negative sub-agent ids included) before
+/// the XOR so the mapping is total and collision-free across the id space.
+pub fn agent_rng_seed(world_seed: u32, agent_id: i32) -> u64 {
+    (world_seed ^ (agent_id as u32)) as u64
 }
 
 // ── Furniture ─────────────────────────────────────────────────────────────────
