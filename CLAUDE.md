@@ -133,7 +133,10 @@ client/                       — Rust TUI client (TUI port Phase 2+; Rust 1.95+
     lib.rs                    — Library crate (pub module tree) so tests/ can import the engine
     assets.rs                 — Client asset blob ingestion: djb2 stringAssetId (mirrors daemon), per-(numericId,tier) chunk accumulator, PNG→RGBA8 decode (image crate); AssetStore
     render/
-      kitty.rs                — Tier T1-K Kitty graphics: encode_transmit (a=t chunked base64), encode_virtual_placement (a=p,U=1,X=/Y= sub-cell), placeholder_text (U+10EEEE grid + diacritics + id-in-fg), compute_placement geometry, KittyUploader (per-session dedup), 297-entry DIACRITICS table
+      b64.rs                  — Shared RFC 4648 base64 (Kitty + iTerm2 encoders)
+      kitty.rs                — Tiers T1-K/T1-O Kitty graphics: encode_transmit (a=t chunked base64), encode_virtual_placement (a=p,U=1) + encode_non_virtual_placement (a=p) + cursor_to, placeholder_text (U+10EEEE grid + diacritics + id-in-fg), compute_placement geometry, KittyUploader (per-session dedup), 297-entry DIACRITICS table
+      iterm2.rs               — Tier T2 iTerm2 inline: encode_inline (OSC 1337 File=inline=1, cell-unit size, BEL) + rgba_to_png
+      sixel.rs                — Tier T3 Sixel: encode_sixel (RGBA→DCS, exact palette ≤256 + 3-3-2 fallback, 6px bands, $/- seps, !n RLE, P2=1 transparency)
     (also present from Phase 2-3, tracked in TODO.md: caps/, office/, focus.rs, chrome.rs, keymap.rs, agents.rs, reconnect.rs, tui.rs, input_queue.rs, raw_mode.rs)
     daemon/
       mod.rs                  — Re-exports connect()

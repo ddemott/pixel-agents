@@ -61,25 +61,6 @@ fn diacritic(n: usize) -> char {
     char::from_u32(cp).expect("diacritics table holds valid scalar values")
 }
 
-// ── Base64 (standard alphabet, padded) ──────────────────────────────────────
-
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64_encode(data: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(B64[(n >> 18) as usize & 0x3f]);
-        out.push(B64[(n >> 12) as usize & 0x3f]);
-        out.push(if chunk.len() > 1 { B64[(n >> 6) as usize & 0x3f] } else { b'=' });
-        out.push(if chunk.len() > 2 { B64[n as usize & 0x3f] } else { b'=' });
-    }
-    out
-}
-
 // ── 1. Transmit ─────────────────────────────────────────────────────────────
 
 /// Build the APC transmit command(s) uploading `rgba` (32-bit, `width×height`)
@@ -87,7 +68,7 @@ fn base64_encode(data: &[u8]) -> Vec<u8> {
 /// at placement time, so we never pre-scale per zoom. Control keys ride only on
 /// the first chunk; continuations carry `m=1`, the final carries `m=0`.
 pub fn encode_transmit(image_id: u32, width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
-    let payload = base64_encode(rgba);
+    let payload = crate::render::b64::encode(rgba);
     let mut out = Vec::new();
 
     let chunks: Vec<&[u8]> = if payload.is_empty() {
@@ -114,13 +95,14 @@ pub fn encode_transmit(image_id: u32, width: u32, height: u32, rgba: &[u8]) -> V
     out
 }
 
-// ── 2. Virtual placement ─────────────────────────────────────────────────────
+// ── 2. Placement ─────────────────────────────────────────────────────────────
 
-/// Build the virtual-placement command for an already-transmitted image. `cols`
-/// and `rows` size the placement grid; `x_off`/`y_off` are pixel offsets into
-/// the first cell for sub-cell-exact positioning. `U=1` marks it virtual so the
-/// unicode placeholders from [`placeholder_text`] bind to it.
-pub fn encode_virtual_placement(
+/// Shared placement-command builder for an already-transmitted image. `cols`/
+/// `rows` size the placement grid; `x_off`/`y_off` are pixel offsets into the
+/// first cell for sub-cell-exact positioning. `U=1` (virtual) is emitted only
+/// when `is_virtual`.
+fn encode_placement(
+    is_virtual: bool,
     image_id: u32,
     placement_id: u32,
     cols: u16,
@@ -128,7 +110,8 @@ pub fn encode_virtual_placement(
     x_off: u16,
     y_off: u16,
 ) -> Vec<u8> {
-    let mut s = format!("\x1b_Ga=p,U=1,i={image_id},p={placement_id},c={cols},r={rows}");
+    let u = if is_virtual { "U=1," } else { "" };
+    let mut s = format!("\x1b_Ga=p,{u}i={image_id},p={placement_id},c={cols},r={rows}");
     if x_off > 0 {
         s.push_str(&format!(",X={x_off}"));
     }
@@ -137,6 +120,42 @@ pub fn encode_virtual_placement(
     }
     s.push_str(";\x1b\\");
     s.into_bytes()
+}
+
+/// T1-K virtual placement (`U=1`) — the unicode placeholders from
+/// [`placeholder_text`] bind to it; survives scrollback.
+pub fn encode_virtual_placement(
+    image_id: u32,
+    placement_id: u32,
+    cols: u16,
+    rows: u16,
+    x_off: u16,
+    y_off: u16,
+) -> Vec<u8> {
+    encode_placement(true, image_id, placement_id, cols, rows, x_off, y_off)
+}
+
+/// T1-O non-virtual placement (no `U=1`) — places an **already-transmitted**
+/// image (companion to [`encode_transmit`]; sprite uploaded once, placed many
+/// times via `i=<id>`) at the current cursor cell. Move the cursor with
+/// [`cursor_to`] first. Images anchor to absolute rows and do **not** survive
+/// scrollback (arch §581, accepted limit). NB: the arch text says `a=T`
+/// (transmit+display in one); we split upload (`a=t`) from placement (`a=p`) so
+/// each sprite ships once — same pixels, fewer bytes.
+pub fn encode_non_virtual_placement(
+    image_id: u32,
+    placement_id: u32,
+    cols: u16,
+    rows: u16,
+    x_off: u16,
+    y_off: u16,
+) -> Vec<u8> {
+    encode_placement(false, image_id, placement_id, cols, rows, x_off, y_off)
+}
+
+/// CSI cursor-position to a 0-based `(col, row)` cell (emits 1-based row;col).
+pub fn cursor_to(col: u16, row: u16) -> Vec<u8> {
+    format!("\x1b[{};{}H", row + 1, col + 1).into_bytes()
 }
 
 // ── 3. Placeholder text ──────────────────────────────────────────────────────
@@ -268,14 +287,6 @@ pub fn compute_placement(
 mod tests {
     use super::*;
 
-    #[test]
-    fn base64_known_vectors() {
-        assert_eq!(base64_encode(b""), b"");
-        assert_eq!(base64_encode(b"f"), b"Zg==");
-        assert_eq!(base64_encode(b"fo"), b"Zm8=");
-        assert_eq!(base64_encode(b"foo"), b"Zm9v");
-        assert_eq!(base64_encode(b"foob"), b"Zm9vYg==");
-    }
 
     #[test]
     fn transmit_single_chunk_1x1_red() {
@@ -320,6 +331,27 @@ mod tests {
         assert_eq!(s, "\x1b_Ga=p,U=1,i=7,p=1,c=4,r=2;\x1b\\");
         assert!(!s.contains("X="));
         assert!(!s.contains("Y="));
+    }
+
+    #[test]
+    fn non_virtual_placement_omits_u_flag() {
+        let s = String::from_utf8(encode_non_virtual_placement(7, 1, 4, 2, 3, 5)).unwrap();
+        assert_eq!(s, "\x1b_Ga=p,i=7,p=1,c=4,r=2,X=3,Y=5;\x1b\\");
+        assert!(!s.contains("U=1"), "non-virtual must not set U=1");
+    }
+
+    #[test]
+    fn virtual_and_non_virtual_differ_only_by_u_flag() {
+        let v = String::from_utf8(encode_virtual_placement(9, 2, 3, 3, 0, 0)).unwrap();
+        let n = String::from_utf8(encode_non_virtual_placement(9, 2, 3, 3, 0, 0)).unwrap();
+        assert_eq!(v, n.replacen("a=p,", "a=p,U=1,", 1));
+    }
+
+    #[test]
+    fn cursor_to_is_one_based_row_col() {
+        assert_eq!(cursor_to(0, 0), b"\x1b[1;1H");
+        // col 3, row 5 → CSI 6;4 H (row first, 1-based).
+        assert_eq!(cursor_to(3, 5), b"\x1b[6;4H");
     }
 
     #[test]

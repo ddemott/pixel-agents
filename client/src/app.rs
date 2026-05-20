@@ -273,11 +273,11 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                 if let Some(ref mut office) = state.office {
                     office.tick(dt);
                 }
-                // T1-K: transmit any newly-decoded sprites once. `a=t` is
+                // T1-K/T1-O: transmit any newly-decoded sprites once. `a=t` is
                 // display-free, so emitting out-of-band of the draw is safe.
                 // (Spatial placement/placeholders land with the Day 17 render
                 // pipeline; this just primes the terminal's image cache.)
-                if matches!(caps.rendering, RenderingCap::KittyK) {
+                if matches!(caps.rendering, RenderingCap::KittyK | RenderingCap::KittyO) {
                     let uploads = state.kitty.pending_uploads(&state.assets);
                     if !uploads.is_empty() {
                         use std::io::Write;
