@@ -10,15 +10,18 @@
 //! The terminal model is the published Tattoy fork of `wezterm-term`
 //! (`tattoy-wezterm-term`; upstream was never on crates.io — see
 //! `docs/tui-implementation-plan.md` §6). Bytes are parsed by
-//! `Terminal::advance_bytes`, which mutates the grid; the visible rows are read
-//! back through `screen().visible_lines()`.
+//! `Terminal::advance_bytes`, which mutates the grid; the rendered rows are
+//! read back through `screen().lines_in_phys_range()` (`visible_lines()` is
+//! `#[cfg(test)]` in the fork).
 //!
-//! Scope (slice 1): ingest + render the focused agent's screen. Deferred to
-//! later Phase-4 slices: input forwarding (`pty.input`), resize follow
-//! (`pty.resize`), the Kitty/iTerm2/Sixel-aware [`PtyByteTap`], scrollback
-//! display, and answerback routing (the `Terminal` writer below is a sink, so
-//! replies to DA/cursor queries are currently discarded rather than sent back
-//! up as `pty.input`).
+//! Done: ingest + render, [`encode_key`] input forwarding, resize-follow,
+//! `scroll_offset` scrollback. Deferred to later Phase-4 slices: the
+//! Kitty/iTerm2/Sixel-aware `PtyByteTap` (its *strip* half is unneeded — the
+//! parser ignores image escapes safely once cell-pixel dims are non-zero; only
+//! the *passthrough* half matters, and it's blocked on image-tier live wiring),
+//! bracketed-paste wrapping, mouse, and answerback routing (the `Terminal`
+//! writer is a sink, so DA/cursor-query replies are discarded rather than sent
+//! back up as `pty.input`).
 
 use std::sync::Arc;
 
@@ -108,11 +111,20 @@ impl PtyTerminal {
         (s.cols as u16, s.rows as u16)
     }
 
+    /// Maximum number of rows the view can scroll back (history above the
+    /// visible window). Used to clamp a scroll offset.
+    pub fn max_scroll(&self) -> usize {
+        let rows = self.term.get_size().rows;
+        self.term.screen().scrollback_rows().saturating_sub(rows)
+    }
+
     /// Paint the visible screen into `area`. Clears `area` to the terminal's
     /// default background first (so blank cells don't show stale content from a
     /// prior view), then writes each occupied cell with its resolved fg/bg, and
-    /// finally inverts the cursor cell when visible.
-    pub fn render_into(&self, buf: &mut Buffer, area: Rect) {
+    /// inverts the cursor cell when visible. `scroll_offset` shifts the window
+    /// up into scrollback history (0 = live bottom); the cursor is hidden while
+    /// scrolled.
+    pub fn render_into(&self, buf: &mut Buffer, area: Rect, scroll_offset: usize) {
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -130,11 +142,13 @@ impl PtyTerminal {
 
         // `Screen::visible_lines` is test-only in this crate, so read the
         // visible window via the phys-range API: map visible rows `0..rows` to
-        // physical row indices, then copy those lines.
+        // physical row indices, then shift up by the clamped scroll offset.
         let rows = self.term.get_size().rows as i64;
         let screen = self.term.screen();
-        let phys = screen.phys_range(&(0..rows));
-        let lines = screen.lines_in_phys_range(phys);
+        let vis = screen.phys_range(&(0..rows));
+        let off = scroll_offset.min(vis.start);
+        let range = (vis.start - off)..(vis.end - off);
+        let lines = screen.lines_in_phys_range(range);
         for (y, line) in lines.iter().enumerate() {
             if y as u16 >= area.height {
                 break;
@@ -158,9 +172,14 @@ impl PtyTerminal {
             }
         }
 
-        // Cursor: invert the fg/bg of its cell when on-screen.
+        // Cursor: invert the fg/bg of its cell when on-screen and not scrolled
+        // back into history.
         let cursor = self.term.cursor_pos();
-        if cursor.y >= 0 && (cursor.y as u16) < area.height && (cursor.x as u16) < area.width {
+        if off == 0
+            && cursor.y >= 0
+            && (cursor.y as u16) < area.height
+            && (cursor.x as u16) < area.width
+        {
             let cell = &mut buf[(area.x + cursor.x as u16, area.y + cursor.y as u16)];
             let (fg, bg) = (cell.fg, cell.bg);
             cell.set_fg(bg);
@@ -241,7 +260,7 @@ mod tests {
         let mut term = PtyTerminal::new(DEFAULT_COLS, DEFAULT_ROWS);
         term.advance(b"hi");
         let mut buf = Buffer::empty(Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS));
-        term.render_into(&mut buf, Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS));
+        term.render_into(&mut buf, Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS), 0);
         assert_eq!(buf[(0, 0)].symbol(), "h");
         assert_eq!(buf[(1, 0)].symbol(), "i");
     }
@@ -252,7 +271,7 @@ mod tests {
         // CRLF since the PTY is in raw mode (no ONLCR translation on our side).
         term.advance(b"a\r\nb");
         let mut buf = Buffer::empty(Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS));
-        term.render_into(&mut buf, Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS));
+        term.render_into(&mut buf, Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS), 0);
         assert_eq!(buf[(0, 0)].symbol(), "a");
         assert_eq!(buf[(0, 1)].symbol(), "b");
     }
@@ -264,7 +283,7 @@ mod tests {
         term.advance(b"\x1b[3");
         term.advance(b"1mX");
         let mut buf = Buffer::empty(Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS));
-        term.render_into(&mut buf, Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS));
+        term.render_into(&mut buf, Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS), 0);
         assert_eq!(buf[(0, 0)].symbol(), "X");
         // Red resolves to a non-default fg; just assert it parsed as a glyph at 0,0.
     }
@@ -283,9 +302,37 @@ mod tests {
         // Sixel DCS: ESC P ... ESC \
         term.advance(b"\x1bPq#0;2;100;0;0#0~~~\x1b\\Z");
         let mut buf = Buffer::empty(Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS));
-        term.render_into(&mut buf, Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS));
+        term.render_into(&mut buf, Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS), 0);
         let row0: String = (0..3u16).map(|x| buf[(x, 0)].symbol()).collect();
         assert_eq!(row0, "XYZ", "image escapes must be parsed-and-ignored, not garble glyphs");
+    }
+
+    #[test]
+    fn scrollback_reveals_history_when_scrolled_up() {
+        // 5 visible rows; print 50 numbered lines so most scroll into history.
+        let mut term = PtyTerminal::new(20, 5);
+        for i in 0..50 {
+            term.advance(format!("line{i}\r\n").as_bytes());
+        }
+        let area = Rect::new(0, 0, 20, 5);
+
+        // At the live bottom (offset 0) the oldest line is gone.
+        let mut bottom = Buffer::empty(area);
+        term.render_into(&mut bottom, area, 0);
+        let bottom_text: String = (0..5u16)
+            .flat_map(|y| (0..20u16).map(move |x| (x, y)))
+            .map(|(x, y)| bottom[(x, y)].symbol().to_string())
+            .collect();
+        assert!(!bottom_text.contains("line0"), "oldest line should be scrolled off at bottom");
+
+        // Scrolled fully up, the oldest line is visible again.
+        let mut top = Buffer::empty(area);
+        term.render_into(&mut top, area, term.max_scroll());
+        let top_text: String = (0..5u16)
+            .flat_map(|y| (0..20u16).map(move |x| (x, y)))
+            .map(|(x, y)| top[(x, y)].symbol().to_string())
+            .collect();
+        assert!(top_text.contains("line0"), "oldest line should be visible when scrolled up");
     }
 
     #[test]
@@ -294,7 +341,7 @@ mod tests {
         term.advance(b"abcdef");
         // 3-wide area: only a,b,c land; no panic past the edge.
         let mut buf = Buffer::empty(Rect::new(0, 0, 3, 2));
-        term.render_into(&mut buf, Rect::new(0, 0, 3, 2));
+        term.render_into(&mut buf, Rect::new(0, 0, 3, 2), 0);
         assert_eq!(buf[(0, 0)].symbol(), "a");
         assert_eq!(buf[(2, 0)].symbol(), "c");
     }

@@ -71,6 +71,9 @@ struct AppState {
     /// (keyed by agent id = PTY stream id). Populated for every live agent, not
     /// just the focused one, so a focus switch shows current output immediately.
     terminals: HashMap<i32, crate::pty::PtyTerminal>,
+    /// Per-agent scrollback offset (rows above the live bottom). 0 = live view.
+    /// Bumped by PgUp/PgDn while PTY-focused; reset to 0 when the user types.
+    scroll_offset: HashMap<i32, usize>,
     /// Timestamp of the last rendered frame for dt calculation.
     last_frame: Option<Instant>,
 }
@@ -94,6 +97,7 @@ impl AppState {
             kitty: KittyUploader::new(),
             render_cap: RenderingCap::Truecolor,
             terminals: HashMap::new(),
+            scroll_offset: HashMap::new(),
             last_frame: None,
         }
     }
@@ -570,6 +574,7 @@ fn handle_event_envelope(evt: crate::daemon::wire::Evt, state: &mut AppState) {
                 // Drop the terminal model (graceful-death output retention is
                 // Phase-4 Day 12 scope).
                 state.terminals.remove(&id);
+                state.scroll_offset.remove(&id);
             }
         }
         "agent.statusChanged" => {
@@ -648,7 +653,25 @@ async fn handle_event(
             // Ctrl+C, Tab, and `q`. Leaving PTY focus is the `FocusOffice`
             // keybinding (default Ctrl+Alt+O).
             if let FocusMode::PtyAgent(id) = state.focus {
+                // PgUp/PgDn drive client-side scrollback (not forwarded to the
+                // PTY). Scroll by a near-full page of the current grid.
+                if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+                    let page = state
+                        .terminals
+                        .get(&id)
+                        .map(|t| t.size().1.saturating_sub(1).max(1) as usize)
+                        .unwrap_or(1);
+                    let max = state.terminals.get(&id).map(|t| t.max_scroll()).unwrap_or(0);
+                    let off = state.scroll_offset.entry(id).or_insert(0);
+                    *off = match key.code {
+                        KeyCode::PageUp => (*off + page).min(max),
+                        _ => off.saturating_sub(page),
+                    };
+                    return Ok(AppAction::Continue);
+                }
                 if let Some(bytes) = crate::pty::encode_key(key.code, key.modifiers) {
+                    // Typing snaps the view back to the live bottom.
+                    state.scroll_offset.remove(&id);
                     if let Some(c) = conn {
                         send_pty_input(c, state, id, &bytes).await?;
                     }
@@ -819,7 +842,8 @@ fn draw_main(frame: &mut ratatui::Frame, area: Rect, state: &AppState) {
                 .title(format!("Agent {id} — {}", state.focus.label()));
             let inner = block.inner(area);
             frame.render_widget(block, area);
-            term.render_into(frame.buffer_mut(), inner);
+            let offset = state.scroll_offset.get(&id).copied().unwrap_or(0);
+            term.render_into(frame.buffer_mut(), inner, offset);
             return;
         }
     }
