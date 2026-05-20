@@ -36,6 +36,27 @@ use tattoy_wezterm_term::{Terminal, TerminalConfiguration, TerminalSize};
 pub const DEFAULT_COLS: u16 = 80;
 pub const DEFAULT_ROWS: u16 = 24;
 
+/// Nominal cell pixel size reported to the terminal model. The exact values
+/// don't matter for cell-tier rendering (we read glyphs, not pixels), but they
+/// MUST be non-zero: the fork's image-placement math divides by the derived
+/// `cell_pixel_width`/`height`, so a zero would panic on any inline image
+/// escape (Kitty/iTerm2/Sixel) an agent emits.
+const CELL_PX_W: u16 = 8;
+const CELL_PX_H: u16 = 16;
+
+/// Build a `TerminalSize` with non-zero pixel dimensions (see [`CELL_PX_W`]).
+fn term_size(cols: u16, rows: u16) -> TerminalSize {
+    let cols = cols.max(1);
+    let rows = rows.max(1);
+    TerminalSize {
+        rows: rows as usize,
+        cols: cols as usize,
+        pixel_width: (cols * CELL_PX_W) as usize,
+        pixel_height: (rows * CELL_PX_H) as usize,
+        dpi: 96,
+    }
+}
+
 /// Minimal terminal config: only `color_palette` is required (everything else
 /// on the trait has a default). We hand back the standard xterm palette; live
 /// OSC-4 palette changes are not tracked yet (slice 1).
@@ -60,13 +81,8 @@ impl PtyTerminal {
     /// (DA/cursor-position replies) are discarded for now — routing them back as
     /// `pty.input` is a later slice.
     pub fn new(cols: u16, rows: u16) -> Self {
-        let size = TerminalSize {
-            rows: rows.max(1) as usize,
-            cols: cols.max(1) as usize,
-            ..TerminalSize::default()
-        };
         let term = Terminal::new(
-            size,
+            term_size(cols, rows),
             Arc::new(PtyConfig),
             "PixelAgents",
             env!("CARGO_PKG_VERSION"),
@@ -83,11 +99,7 @@ impl PtyTerminal {
 
     /// Resize the grid (used once resize-follow lands; harmless before then).
     pub fn resize(&mut self, cols: u16, rows: u16) {
-        self.term.resize(TerminalSize {
-            rows: rows.max(1) as usize,
-            cols: cols.max(1) as usize,
-            ..TerminalSize::default()
-        });
+        self.term.resize(term_size(cols, rows));
     }
 
     /// Current grid size as `(cols, rows)`.
@@ -255,6 +267,25 @@ mod tests {
         term.render_into(&mut buf, Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS));
         assert_eq!(buf[(0, 0)].symbol(), "X");
         // Red resolves to a non-default fg; just assert it parsed as a glyph at 0,0.
+    }
+
+    #[test]
+    fn image_escapes_dont_garble_following_glyphs() {
+        // Receipt for deferring the PtyByteTap *strip* half (plan §6 Day 4-5):
+        // the wezterm parser already swallows image-protocol escapes, so glyphs
+        // after them land normally. Only the *passthrough* half has value, and
+        // that's blocked on image-tier live wiring (TODO), not Phase-4 sequence.
+        let mut term = PtyTerminal::new(DEFAULT_COLS, DEFAULT_ROWS);
+        // Kitty APC: ESC _ G ... ESC \
+        term.advance(b"\x1b_Gf=32,a=t,m=1;AAAA\x1b\\X");
+        // iTerm2 OSC 1337: ESC ] 1337 ; ... BEL
+        term.advance(b"\x1b]1337;File=name=Zg==:AAAA\x07Y");
+        // Sixel DCS: ESC P ... ESC \
+        term.advance(b"\x1bPq#0;2;100;0;0#0~~~\x1b\\Z");
+        let mut buf = Buffer::empty(Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS));
+        term.render_into(&mut buf, Rect::new(0, 0, DEFAULT_COLS, DEFAULT_ROWS));
+        let row0: String = (0..3u16).map(|x| buf[(x, 0)].symbol()).collect();
+        assert_eq!(row0, "XYZ", "image escapes must be parsed-and-ignored, not garble glyphs");
     }
 
     #[test]
