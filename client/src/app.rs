@@ -332,6 +332,30 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                 if let Some(office) = state.office.as_mut() {
                     office.selected_agent_id = selected;
                 }
+                // Resize-follow: keep the focused agent's PTY grid matched to
+                // its on-screen size. Polls the terminal size each tick and only
+                // emits `pty.resize` when the target actually changes (so a
+                // SIGWINCH or focus switch propagates within a frame).
+                if let FocusMode::PtyAgent(id) = state.focus {
+                    let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+                    let (tc, tr) = pty_grid_size(cols, rows);
+                    let changed = state
+                        .terminals
+                        .get_mut(&id)
+                        .is_some_and(|term| {
+                            if term.size() != (tc, tr) {
+                                term.resize(tc, tr);
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                    if changed {
+                        if let Some(c) = conn.as_mut() {
+                            let _ = send_pty_resize(c, &mut state, id, tc, tr).await;
+                        }
+                    }
+                }
                 // T1-K/T1-O: transmit any newly-decoded sprites once. `a=t` is
                 // display-free, so emitting out-of-band of the draw is safe.
                 // (Spatial placement/placeholders land with the Day 17 render
@@ -435,6 +459,36 @@ async fn send_pty_input(
         params: Some(json!({ "id": id, "bytes": b64 })),
     };
     conn.send(&req).await
+}
+
+/// Tell the daemon to resize the agent's PTY to `cols × rows` (SIGWINCH to the
+/// child). Fire-and-forget, like `send_pty_input`.
+async fn send_pty_resize(
+    conn: &mut DaemonConn,
+    state: &mut AppState,
+    id: i32,
+    cols: u16,
+    rows: u16,
+) -> Result<()> {
+    let req_id = state.next_req_id();
+    let req = Req {
+        kind: "req",
+        req_id,
+        method: "pty.resize".into(),
+        params: Some(json!({ "id": id, "cols": cols, "rows": rows })),
+    };
+    conn.send(&req).await
+}
+
+/// Inner grid size (cols, rows) available to a focused PTY for a terminal of
+/// `cols × rows` cells: the chrome `main` region minus the 1-cell block border
+/// on each side. Floored at 1 so a tiny window can't produce a zero dimension.
+fn pty_grid_size(cols: u16, rows: u16) -> (u16, u16) {
+    let main = chrome::split_areas(Rect::new(0, 0, cols, rows)).main;
+    (
+        main.width.saturating_sub(2).max(1),
+        main.height.saturating_sub(2).max(1),
+    )
 }
 
 async fn handle_daemon_json(
@@ -1084,6 +1138,20 @@ mod tests {
         assert!(s.terminals.contains_key(&7));
         handle_event_envelope(exited_evt(7), &mut s);
         assert!(!s.terminals.contains_key(&7), "terminal should drop on exit");
+    }
+
+    #[test]
+    fn pty_grid_size_subtracts_chrome_and_border() {
+        // 80×24 terminal: chrome takes 2 rows (status+toolbar), the PTY block
+        // border takes 1 cell on each side → 78×20.
+        assert_eq!(pty_grid_size(80, 24), (78, 20));
+    }
+
+    #[test]
+    fn pty_grid_size_floors_at_one() {
+        // Degenerate tiny terminal must not yield a zero dimension.
+        let (c, r) = pty_grid_size(1, 1);
+        assert!(c >= 1 && r >= 1);
     }
 
     #[test]
