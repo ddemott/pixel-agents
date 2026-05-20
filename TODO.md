@@ -36,11 +36,12 @@ Phase 1 (daemon) + Phase 2 (TUI client foundation) complete. Phase 3 Day 1-14 do
 
 ## Technical debt surfaced during Phase 0-1
 
-Most Phase 0-1 debt was cleared in the debt batch (see Recently done). Remaining
-items are deliberate deferrals with a documented decision/owner:
+Most Phase 0-1 debt was cleared in the debt batch (see Recently done). What's
+left are **decisions made / work parked to a later phase** — not open action
+items for now (checked = decided; the phase-tagged ones surface again on schedule):
 
-- [ ] **`PtyHost` cooperative backpressure — REJECTED, not implemented.** The
-      per-subscriber bounded ring (`SUBSCRIBER_QUEUE_MAX`) is the OOM ceiling.
+- [x] **`PtyHost` cooperative backpressure — DECIDED: rejected, not implemented.**
+      The per-subscriber bounded ring (`SUBSCRIBER_QUEUE_MAX`) is the OOM ceiling.
       Pausing a shared PTY when one viewer wedges would freeze the stream for all
       viewers (worse failure mode). `PtyHost.pause()/resume()` exist as a dormant
       capability; `BackpressureCallbacks` hooks remain for future _per-agent_ flow
