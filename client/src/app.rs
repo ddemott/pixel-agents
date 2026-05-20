@@ -67,6 +67,10 @@ struct AppState {
     kitty: KittyUploader,
     /// Active terminal rendering capability (tier). Drives the office draw path.
     render_cap: RenderingCap,
+    /// Per-agent headless terminal models, fed by the daemon's 0x01 PTY stream
+    /// (keyed by agent id = PTY stream id). Populated for every live agent, not
+    /// just the focused one, so a focus switch shows current output immediately.
+    terminals: HashMap<i32, crate::pty::PtyTerminal>,
     /// Timestamp of the last rendered frame for dt calculation.
     last_frame: Option<Instant>,
 }
@@ -89,8 +93,21 @@ impl AppState {
             char_sprites: crate::render::char_sprites::CharSpriteStore::new(),
             kitty: KittyUploader::new(),
             render_cap: RenderingCap::Truecolor,
+            terminals: HashMap::new(),
             last_frame: None,
         }
+    }
+
+    /// Feed raw PTY bytes for `agent_id` into its terminal model, creating the
+    /// model on first sight (sized to the daemon's spawn default until
+    /// resize-follow lands).
+    fn ingest_pty(&mut self, agent_id: i32, bytes: &[u8]) {
+        self.terminals
+            .entry(agent_id)
+            .or_insert_with(|| {
+                crate::pty::PtyTerminal::new(crate::pty::DEFAULT_COLS, crate::pty::DEFAULT_ROWS)
+            })
+            .advance(bytes);
     }
 
     fn next_req_id(&mut self) -> u32 {
@@ -244,7 +261,12 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                             }
                         }
                     }
-                    Ok(_) => {} // PTY frames handled in Phase 4
+                    Ok(Frame::PtyOut { stream_id, bytes }) => {
+                        // stream_id == agent id (daemon `broadcastPty`). Feed
+                        // every agent's stream so a focus switch is instant.
+                        state.ingest_pty(stream_id as i32, &bytes);
+                    }
+                    Ok(_) => {} // PtyIn is client→daemon only; never received here.
                     Err(_) => {
                         conn = None;
                         state.on_disconnected();
@@ -469,6 +491,9 @@ fn handle_event_envelope(evt: crate::daemon::wire::Evt, state: &mut AppState) {
                 if let Some(office) = state.office.as_mut() {
                     office.remove_agent(id);
                 }
+                // Drop the terminal model (graceful-death output retention is
+                // Phase-4 Day 12 scope).
+                state.terminals.remove(&id);
             }
         }
         "agent.statusChanged" => {
@@ -692,6 +717,21 @@ fn draw_main(frame: &mut ratatui::Frame, area: Rect, state: &AppState) {
         return;
     }
 
+    // Focused agent: its live terminal grid takes over the main area (all
+    // tiers). Falls through to the office/list view until the first PTY bytes
+    // for that agent arrive (no terminal model yet).
+    if let FocusMode::PtyAgent(id) = state.focus {
+        if let Some(term) = state.terminals.get(&id) {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!("Agent {id} — {}", state.focus.label()));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            term.render_into(frame.buffer_mut(), inner);
+            return;
+        }
+    }
+
     // Cell tiers (T4/T5/T6/T6b): render the spatial office into the main area.
     // Image tiers (Kitty/iTerm2/Sixel) keep the agent-list view until the
     // image-tier compositor is wired into the live writer (see render::scene).
@@ -854,6 +894,15 @@ mod tests {
         }
     }
 
+    fn exited_evt(id: i32) -> crate::daemon::wire::Evt {
+        crate::daemon::wire::Evt {
+            topic: "agent.exited".into(),
+            seq: 1,
+            ts: 0,
+            data: serde_json::json!({ "id": id }),
+        }
+    }
+
     #[test]
     fn bridge_created_spawns_office_character() {
         let mut s = make_state_with_office();
@@ -946,6 +995,57 @@ mod tests {
             .flat_map(|x| (0..24u16).map(move |y| (x, y)))
             .any(|(x, y)| buf[(x, y)].bg == Color::Rgb(56, 56, 74));
         assert!(floor, "office floor should render for a cell tier");
+    }
+
+    #[test]
+    fn render_paints_focused_pty_grid() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // No office needed: focusing an agent with a live terminal renders its
+        // grid over the main area regardless of tier.
+        let mut state = make_state();
+        state.render_cap = RenderingCap::Truecolor;
+        state.reconnect = None;
+        state.focus = FocusMode::PtyAgent(3);
+        state.ingest_pty(3, b"HELLO");
+
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| render(f, &mut state)).unwrap();
+
+        // The PTY block title + the ingested text should appear somewhere in
+        // the main area (chrome offsets it from buffer row 0, so scan all rows).
+        let buf = term.backend().buffer();
+        let row_text: String = (0..24u16)
+            .flat_map(|y| (0..80u16).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect();
+        assert!(row_text.contains("Agent 3"), "PTY block title should render");
+        assert!(row_text.contains("HELLO"), "ingested PTY text should render");
+    }
+
+    #[test]
+    fn focused_pty_falls_back_when_no_terminal_yet() {
+        // Focus an agent before any PTY bytes arrive → no terminal model, so the
+        // PTY branch is skipped (no panic, falls through to the empty view).
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut state = make_state();
+        state.reconnect = None;
+        state.focus = FocusMode::PtyAgent(9);
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| render(f, &mut state)).unwrap();
+        assert!(!state.terminals.contains_key(&9));
+    }
+
+    #[test]
+    fn pty_terminal_dropped_on_agent_exit() {
+        let mut s = make_state_with_office();
+        handle_event_envelope(created_evt(7, 0), &mut s);
+        s.ingest_pty(7, b"x");
+        assert!(s.terminals.contains_key(&7));
+        handle_event_envelope(exited_evt(7), &mut s);
+        assert!(!s.terminals.contains_key(&7), "terminal should drop on exit");
     }
 
     #[test]
