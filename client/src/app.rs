@@ -17,6 +17,7 @@ use crate::assets::AssetStore;
 use crate::chrome::{self, ChromeAction};
 use crate::daemon::wire::{ClientCapabilities, Inbound, Req, RenderingCap};
 use crate::render::kitty::KittyUploader;
+use crate::render::scene::{compose_cells_into, View};
 use crate::daemon::{framing::Frame, DaemonConn};
 use crate::focus::{tab_press, FocusMode, TabOutcome};
 use crate::keymap::{Action, Keymap};
@@ -61,6 +62,8 @@ struct AppState {
     assets: AssetStore,
     /// Tracks Kitty image uploads (T1-K) so each sprite transmits once.
     kitty: KittyUploader,
+    /// Active terminal rendering capability (tier). Drives the office draw path.
+    render_cap: RenderingCap,
     /// Timestamp of the last rendered frame for dt calculation.
     last_frame: Option<Instant>,
 }
@@ -81,6 +84,7 @@ impl AppState {
             office: None,
             assets: AssetStore::new(),
             kitty: KittyUploader::new(),
+            render_cap: RenderingCap::Truecolor,
             last_frame: None,
         }
     }
@@ -158,6 +162,7 @@ async fn recv_from_conn(conn: &mut Option<DaemonConn>) -> Result<Frame> {
 pub async fn run(caps: ClientCapabilities) -> Result<()> {
     let keymap = Keymap::load();
     let mut state = AppState::new(keymap);
+    state.render_cap = caps.rendering.clone();
     let mut tui = Tui::new()?;
     let mut events = EventStream::new();
     let mut tick = interval(FRAME_INTERVAL);
@@ -531,6 +536,15 @@ async fn handle_event(
     Ok(AppAction::Continue)
 }
 
+/// Cell-rasterized tiers (no terminal graphics protocol). The half-block
+/// rasterizer serves all of them — the terminal down-quantizes the truecolor.
+fn is_cell_tier(cap: &RenderingCap) -> bool {
+    matches!(
+        cap,
+        RenderingCap::Truecolor | RenderingCap::C256 | RenderingCap::C16 | RenderingCap::Braille
+    )
+}
+
 fn render(frame: &mut ratatui::Frame, state: &mut AppState) {
     let areas = chrome::split_areas(frame.area());
     draw_main(frame, areas.main, state);
@@ -556,6 +570,22 @@ fn draw_main(frame: &mut ratatui::Frame, area: Rect, state: &AppState) {
             .style(Style::default());
         frame.render_widget(p, area);
         return;
+    }
+
+    // Cell tiers (T4/T5/T6/T6b): render the spatial office into the main area.
+    // Image tiers (Kitty/iTerm2/Sixel) keep the agent-list view until the
+    // image-tier compositor is wired into the live writer (see render::scene).
+    if is_cell_tier(&state.render_cap) {
+        if let Some(ref office) = state.office {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!("Office — {}", state.focus.label()));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            let view = View::new(office, inner, state.zoom as u16);
+            compose_cells_into(frame.buffer_mut(), office, &state.assets, &view);
+            return;
+        }
     }
 
     if state.agents.is_empty() {
@@ -661,6 +691,50 @@ mod tests {
 
     fn make_state() -> AppState {
         AppState::new(Keymap::load())
+    }
+
+    #[test]
+    fn is_cell_tier_classifies_tiers() {
+        assert!(is_cell_tier(&RenderingCap::Truecolor));
+        assert!(is_cell_tier(&RenderingCap::C256));
+        assert!(is_cell_tier(&RenderingCap::Braille));
+        assert!(!is_cell_tier(&RenderingCap::KittyK));
+        assert!(!is_cell_tier(&RenderingCap::Iterm2));
+        assert!(!is_cell_tier(&RenderingCap::Sixel));
+    }
+
+    #[test]
+    fn render_paints_office_for_cell_tier() {
+        use crate::office::catalog::FurnitureCatalog;
+        use crate::office::state::OfficeState;
+        use crate::office::types::{OfficeLayout, TileType};
+        use ratatui::backend::TestBackend;
+        use ratatui::style::Color;
+        use ratatui::Terminal;
+
+        // All-floor 5×5 office, no reconnect, truecolor tier.
+        let layout = OfficeLayout {
+            version: 1,
+            cols: 5,
+            rows: 5,
+            tiles: vec![TileType::Floor1; 25],
+            furniture: vec![],
+            tile_colors: vec![None; 25],
+        };
+        let mut state = make_state();
+        state.render_cap = RenderingCap::Truecolor;
+        state.reconnect = None;
+        state.office = Some(OfficeState::new(FurnitureCatalog::empty(), layout, 1));
+
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| render(f, &mut state)).unwrap();
+
+        // Floor cells (FLOOR_BG = Rgb(56,56,74)) were painted into the main area.
+        let buf = term.backend().buffer();
+        let floor = (0..80u16)
+            .flat_map(|x| (0..24u16).map(move |y| (x, y)))
+            .any(|(x, y)| buf[(x, y)].bg == Color::Rgb(56, 56, 74));
+        assert!(floor, "office floor should render for a cell tier");
     }
 
     #[test]

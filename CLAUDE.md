@@ -137,6 +137,8 @@ client/                       — Rust TUI client (TUI port Phase 2+; Rust 1.95+
       kitty.rs                — Tiers T1-K/T1-O Kitty graphics: encode_transmit (a=t chunked base64), encode_virtual_placement (a=p,U=1) + encode_non_virtual_placement (a=p) + cursor_to, placeholder_text (U+10EEEE grid + diacritics + id-in-fg), compute_placement geometry, KittyUploader (per-session dedup), 297-entry DIACRITICS table
       iterm2.rs               — Tier T2 iTerm2 inline: encode_inline (OSC 1337 File=inline=1, cell-unit size, BEL) + rgba_to_png
       sixel.rs                — Tier T3 Sixel: encode_sixel (RGBA→DCS, exact palette ≤256 + 3-3-2 fallback, 6px bands, $/- seps, !n RLE, P2=1 transparency)
+      cells.rs                — Tiers T4-T6/T6b cell rasterizers: rasterize_halfblock (▀/▄, 2px/cell, T4/T5/T6 share — terminal quantizes) + rasterize_braille (2×4 dots, U+2800+bits) into a Ratatui Buffer
+      scene.rs                — Day 17 compositor: View (world-px→screen-cell, camera-centred, half-block vertical halving), compose_cells_into (flat floor/wall + z-sorted furniture sprites + char placeholders → Buffer), scale_rgba (nearest-neighbour zoom), image_placements + compose_t1k_frame (image-tier geometry + Kitty frame bytes). Wired into app.rs draw_main for cell tiers.
     (also present from Phase 2-3, tracked in TODO.md: caps/, office/, focus.rs, chrome.rs, keymap.rs, agents.rs, reconnect.rs, tui.rs, input_queue.rs, raw_mode.rs)
     daemon/
       mod.rs                  — Re-exports connect()
