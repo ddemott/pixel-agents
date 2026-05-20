@@ -23,6 +23,7 @@
 use std::sync::Arc;
 
 use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 // `ColorAttribute` + `ColorPalette` both live in the term crate's `color`
@@ -156,6 +157,69 @@ impl PtyTerminal {
     }
 }
 
+/// Encode a crossterm key press into the byte sequence a PTY expects, for
+/// forwarding as `pty.input`. Returns `None` for keys we don't map (e.g. bare
+/// modifier presses, F-keys) so the caller can ignore them.
+///
+/// Covers the interactive-MVP set: printable chars (with ALT → `ESC` prefix),
+/// `Ctrl`+letter control codes, Enter/Tab/Backspace/Esc, arrows + nav keys.
+/// Limitations (later slices): arrows are emitted in normal-cursor mode
+/// (`ESC [ A`) regardless of the terminal's DECCKM application-cursor state,
+/// and the Kitty keyboard protocol / full F-key set are not encoded.
+pub fn encode_key(code: KeyCode, mods: KeyModifiers) -> Option<Vec<u8>> {
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    let alt = mods.contains(KeyModifiers::ALT);
+    let mut out: Vec<u8> = Vec::new();
+    match code {
+        KeyCode::Char(c) => {
+            if ctrl {
+                // Map to the C0 control code; unknown combos are dropped.
+                let b = match c.to_ascii_lowercase() {
+                    'a'..='z' => (c.to_ascii_uppercase() as u8) & 0x1f,
+                    ' ' | '@' => 0x00,
+                    '[' => 0x1b,
+                    '\\' => 0x1c,
+                    ']' => 0x1d,
+                    '^' => 0x1e,
+                    '_' | '/' => 0x1f,
+                    _ => return None,
+                };
+                if alt {
+                    out.push(0x1b);
+                }
+                out.push(b);
+            } else {
+                if alt {
+                    out.push(0x1b);
+                }
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+        KeyCode::Enter => out.push(b'\r'),
+        KeyCode::Tab => out.push(b'\t'),
+        KeyCode::BackTab => out.extend_from_slice(b"\x1b[Z"),
+        KeyCode::Backspace => out.push(0x7f),
+        KeyCode::Esc => out.push(0x1b),
+        KeyCode::Up => out.extend_from_slice(b"\x1b[A"),
+        KeyCode::Down => out.extend_from_slice(b"\x1b[B"),
+        KeyCode::Right => out.extend_from_slice(b"\x1b[C"),
+        KeyCode::Left => out.extend_from_slice(b"\x1b[D"),
+        KeyCode::Home => out.extend_from_slice(b"\x1b[H"),
+        KeyCode::End => out.extend_from_slice(b"\x1b[F"),
+        KeyCode::PageUp => out.extend_from_slice(b"\x1b[5~"),
+        KeyCode::PageDown => out.extend_from_slice(b"\x1b[6~"),
+        KeyCode::Delete => out.extend_from_slice(b"\x1b[3~"),
+        KeyCode::Insert => out.extend_from_slice(b"\x1b[2~"),
+        _ => return None,
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +266,47 @@ mod tests {
         term.render_into(&mut buf, Rect::new(0, 0, 3, 2));
         assert_eq!(buf[(0, 0)].symbol(), "a");
         assert_eq!(buf[(2, 0)].symbol(), "c");
+    }
+
+    #[test]
+    fn encode_plain_char() {
+        assert_eq!(encode_key(KeyCode::Char('a'), KeyModifiers::NONE), Some(b"a".to_vec()));
+    }
+
+    #[test]
+    fn encode_ctrl_c_is_etx() {
+        assert_eq!(
+            encode_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Some(vec![0x03])
+        );
+    }
+
+    #[test]
+    fn encode_enter_is_carriage_return() {
+        assert_eq!(encode_key(KeyCode::Enter, KeyModifiers::NONE), Some(b"\r".to_vec()));
+    }
+
+    #[test]
+    fn encode_backspace_is_del() {
+        assert_eq!(encode_key(KeyCode::Backspace, KeyModifiers::NONE), Some(vec![0x7f]));
+    }
+
+    #[test]
+    fn encode_arrow_up_is_csi() {
+        assert_eq!(encode_key(KeyCode::Up, KeyModifiers::NONE), Some(b"\x1b[A".to_vec()));
+    }
+
+    #[test]
+    fn encode_alt_char_prefixes_escape() {
+        assert_eq!(
+            encode_key(KeyCode::Char('x'), KeyModifiers::ALT),
+            Some(b"\x1bx".to_vec())
+        );
+    }
+
+    #[test]
+    fn encode_unmapped_key_is_none() {
+        assert_eq!(encode_key(KeyCode::F(5), KeyModifiers::NONE), None);
     }
 
     /// Compile-time guard: catches a renamed fork API at `cargo test` time.

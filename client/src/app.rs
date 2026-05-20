@@ -415,6 +415,28 @@ async fn send_agent_spawn(conn: &mut DaemonConn, state: &mut AppState) -> Result
     conn.send(&req).await
 }
 
+/// Forward raw input bytes to the focused agent's PTY via the `pty.input` RPC
+/// (base64 over NDJSON). Fire-and-forget: the `ok` reply carries no data we
+/// need, so the req id isn't tracked (`handle_daemon_json` ignores unmatched
+/// responses).
+async fn send_pty_input(
+    conn: &mut DaemonConn,
+    state: &mut AppState,
+    id: i32,
+    bytes: &[u8],
+) -> Result<()> {
+    let req_id = state.next_req_id();
+    let b64 = String::from_utf8(crate::render::b64::encode(bytes))
+        .expect("base64 output is ASCII");
+    let req = Req {
+        kind: "req",
+        req_id,
+        method: "pty.input".into(),
+        params: Some(json!({ "id": id, "bytes": b64 })),
+    };
+    conn.send(&req).await
+}
+
 async fn handle_daemon_json(
     json: &str,
     state: &mut AppState,
@@ -567,6 +589,19 @@ async fn handle_event(
                 return Ok(AppAction::Continue);
             }
 
+            // PTY focus: every key (except the Ctrl+Alt app escapes handled
+            // above) is encoded and forwarded to the agent's PTY — including
+            // Ctrl+C, Tab, and `q`. Leaving PTY focus is the `FocusOffice`
+            // keybinding (default Ctrl+Alt+O).
+            if let FocusMode::PtyAgent(id) = state.focus {
+                if let Some(bytes) = crate::pty::encode_key(key.code, key.modifiers) {
+                    if let Some(c) = conn {
+                        send_pty_input(c, state, id, &bytes).await?;
+                    }
+                }
+                return Ok(AppAction::Continue);
+            }
+
             match key.code {
                 KeyCode::Char('q') if key.modifiers == KeyModifiers::NONE => {
                     if matches!(state.focus, FocusMode::Office | FocusMode::Editor) {
@@ -617,9 +652,12 @@ async fn handle_event(
         }
 
         Event::Paste(text) => {
-            if state.focus.is_pty_agent() {
-                // PTY input wired in Phase 4
-                let _ = text;
+            // Raw paste for now; bracketed-paste wrapping (ESC[200~ … ESC[201~)
+            // is a later slice.
+            if let FocusMode::PtyAgent(id) = state.focus {
+                if let Some(c) = conn {
+                    send_pty_input(c, state, id, text.as_bytes()).await?;
+                }
             }
         }
 
