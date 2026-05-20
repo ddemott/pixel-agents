@@ -17,6 +17,7 @@ use crate::assets::AssetStore;
 use crate::chrome::{self, ChromeAction};
 use crate::daemon::wire::{ClientCapabilities, Inbound, Req, RenderingCap};
 use crate::render::kitty::KittyUploader;
+use crate::render::char_sprites::CharSpriteStore;
 use crate::render::scene::{compose_cells_into, View};
 use crate::daemon::{framing::Frame, DaemonConn};
 use crate::focus::{tab_press, FocusMode, TabOutcome};
@@ -60,6 +61,8 @@ struct AppState {
     office: Option<crate::office::state::OfficeState>,
     /// Decoded sprite store, populated from the daemon's 0x02 asset channel.
     assets: AssetStore,
+    /// Character sprite sheets sliced into per-state frames, hue-shifted lazily.
+    char_sprites: crate::render::char_sprites::CharSpriteStore,
     /// Tracks Kitty image uploads (T1-K) so each sprite transmits once.
     kitty: KittyUploader,
     /// Active terminal rendering capability (tier). Drives the office draw path.
@@ -83,6 +86,7 @@ impl AppState {
             reconnect: None,
             office: None,
             assets: AssetStore::new(),
+            char_sprites: crate::render::char_sprites::CharSpriteStore::new(),
             kitty: KittyUploader::new(),
             render_cap: RenderingCap::Truecolor,
             last_frame: None,
@@ -230,7 +234,15 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                     }
                     Ok(Frame::Asset { asset_id, tier, is_final, bytes }) => {
                         // Decode failures skip the one sprite; the loop keeps running.
-                        let _ = state.assets.on_frame(asset_id, tier, is_final, &bytes);
+                        if let Ok(Some(id)) = state.assets.on_frame(asset_id, tier, is_final, &bytes) {
+                            // A `char_N` sheet just completed → hand it to the
+                            // character sprite store for slicing.
+                            if let Some(palette) = CharSpriteStore::palette_of(&id) {
+                                if let Some(sheet) = state.assets.get(&id) {
+                                    state.char_sprites.ingest(palette, sheet.clone());
+                                }
+                            }
+                        }
                     }
                     Ok(_) => {} // PTY frames handled in Phase 4
                     Err(_) => {
@@ -277,6 +289,17 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                 state.last_frame = Some(now);
                 if let Some(ref mut office) = state.office {
                     office.tick(dt);
+                }
+                // Build the frame sets for every live (palette, hue_shift) combo
+                // before drawing (draw reads the store immutably). Collect first
+                // to drop the office borrow.
+                let combos: Vec<(u8, i32)> = state
+                    .office
+                    .as_ref()
+                    .map(|o| o.characters.values().map(|c| (c.palette, c.hue_shift)).collect())
+                    .unwrap_or_default();
+                for (palette, hue) in combos {
+                    state.char_sprites.ensure(palette, hue);
                 }
                 // T1-K/T1-O: transmit any newly-decoded sprites once. `a=t` is
                 // display-free, so emitting out-of-band of the draw is safe.
@@ -330,7 +353,11 @@ async fn request_assets(conn: &mut DaemonConn, state: &mut AppState) -> Result<(
         Some(o) => o.catalog.entries.keys().cloned().collect(),
         None => return Ok(()),
     };
-    for id in ids {
+    // Furniture catalog assets + the six character sprite sheets (`char_0`..
+    // `char_5`). Unknown ids reply `not_found` and are simply never decoded, so
+    // requesting all six is safe even if a pack ships fewer.
+    let char_ids = (0..crate::office::types::NUM_PALETTES as u8).map(CharSpriteStore::asset_id);
+    for id in ids.into_iter().chain(char_ids) {
         state.assets.register_request(&id);
         let req_id = state.next_req_id();
         state.pending.insert(req_id, PendingKind::AssetBlob);
@@ -583,7 +610,7 @@ fn draw_main(frame: &mut ratatui::Frame, area: Rect, state: &AppState) {
             let inner = block.inner(area);
             frame.render_widget(block, area);
             let view = View::new(office, inner, state.zoom as u16);
-            compose_cells_into(frame.buffer_mut(), office, &state.assets, &view);
+            compose_cells_into(frame.buffer_mut(), office, &state.assets, &state.char_sprites, &view);
             return;
         }
     }

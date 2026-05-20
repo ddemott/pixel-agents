@@ -112,6 +112,21 @@ export class AssetRegistry {
       }
     }
 
+    // Character sprite sheets (Day 18): `char_N.png` live in the `characters`
+    // sibling of the bundled furniture dir, not inside the furniture catalog.
+    // Register them by bare id `char_N` so `assets.requestBlob { assetId:
+    // "char_0" }` resolves the raw 112×96 sheet. External character packs are a
+    // follow-up — the client falls back to placeholder blocks for missing ids.
+    const charsDir = path.join(path.dirname(this.dirs.bundled), 'characters');
+    try {
+      for (const entry of fs.readdirSync(charsDir)) {
+        const m = /^(char_\d+)\.png$/i.exec(entry);
+        if (m) filePaths.set(m[1]!, path.join(charsDir, entry));
+      }
+    } catch {
+      // characters dir absent (some packs) — fine, client uses placeholders.
+    }
+
     const catalog = buildGroups([...merged.values()]);
     return { catalog, pngCache: new Map(), filePaths };
   }

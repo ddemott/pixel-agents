@@ -23,7 +23,7 @@ pub fn string_asset_id(id: &str) -> u32 {
 }
 
 /// A decoded sprite: tightly-packed RGBA8, row-major, `width * height * 4` bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DecodedAsset {
     pub width: u32,
     pub height: u32,

@@ -29,8 +29,9 @@ use ratatui::style::Color;
 
 use crate::assets::AssetStore;
 use crate::office::state::OfficeState;
-use crate::office::types::TileType;
+use crate::office::types::{CharacterState, TileType};
 use crate::render::cells::rasterize_halfblock;
+use crate::render::char_sprites::CharSpriteStore;
 use crate::render::kitty::{
     compute_placement, cursor_to, encode_transmit, encode_virtual_placement, placeholder_text,
     Placement,
@@ -131,10 +132,16 @@ struct Drawable<'a> {
     placeholder_px: (u32, u32),
 }
 
-/// Collect furniture (real sprites) + characters (placeholders) as z-sorted
-/// drawables. Furniture z from its instance; characters from `y + TILE/2`
-/// (matches the webview's character z-bias).
-fn collect_drawables<'a>(office: &'a OfficeState, assets: &'a AssetStore) -> Vec<Drawable<'a>> {
+/// Collect furniture + characters as z-sorted drawables. Furniture z from its
+/// instance; characters from `y + TILE/2 + 0.5` (matches the webview's character
+/// z-bias). A character renders its real sprite frame once its `char_N` sheet has
+/// arrived and the `(palette, hue_shift)` set is built; until then a
+/// palette-tinted placeholder block stands in.
+fn collect_drawables<'a>(
+    office: &'a OfficeState,
+    assets: &'a AssetStore,
+    chars: &'a CharSpriteStore,
+) -> Vec<Drawable<'a>> {
     let mut out: Vec<Drawable> = Vec::new();
 
     for f in &office.furniture {
@@ -149,24 +156,43 @@ fn collect_drawables<'a>(office: &'a OfficeState, assets: &'a AssetStore) -> Vec
     }
 
     for ch in office.characters.values() {
-        // No character sprite asset until Day 18 → a palette-tinted block stands in.
-        let tint = PLACEHOLDER_PALETTE[(ch.palette as usize) % PLACEHOLDER_PALETTE.len()];
-        out.push(Drawable {
-            z_y: ch.y + TILE_SIZE as f32 / 2.0 + 0.5,
-            world_x: ch.x - 8.0, // centre a 16px-wide marker
-            world_y: ch.y - 24.0, // bottom-align ~24px tall
-            sprite: None,
-            placeholder: Some(tint),
-            placeholder_px: (16, 24),
-        });
+        let z_y = ch.y + TILE_SIZE as f32 / 2.0 + 0.5;
+        // Sitting offset: shift down 6px in TYPE so the char sits in the chair.
+        let sit = if ch.state == CharacterState::Type {
+            crate::office::types::CHARACTER_SITTING_OFFSET_PX as f32
+        } else {
+            0.0
+        };
+        match chars.get(ch.palette, ch.hue_shift).map(|set| set.frame(ch)) {
+            Some(frame) => out.push(Drawable {
+                z_y,
+                // Anchor bottom-centre on (ch.x, ch.y + sit): 16px wide, 32px tall.
+                world_x: ch.x - 8.0,
+                world_y: ch.y + sit - 32.0,
+                sprite: Some(frame),
+                placeholder: None,
+                placeholder_px: (16, 32),
+            }),
+            None => {
+                let tint = PLACEHOLDER_PALETTE[(ch.palette as usize) % PLACEHOLDER_PALETTE.len()];
+                out.push(Drawable {
+                    z_y,
+                    world_x: ch.x - 8.0, // centre a 16px-wide marker
+                    world_y: ch.y + sit - 24.0, // bottom-align ~24px tall
+                    sprite: None,
+                    placeholder: Some(tint),
+                    placeholder_px: (16, 24),
+                });
+            }
+        }
     }
 
     out.sort_by(|a, b| a.z_y.partial_cmp(&b.z_y).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
 
-/// Distinct-ish placeholder tints per base palette index (Day 18 replaces these
-/// with the real `char_N.png` sprites).
+/// Distinct-ish placeholder tints per base palette index, used only as a fallback
+/// before a character's `char_N.png` sheet has been received/decoded.
 const PLACEHOLDER_PALETTE: [Color; 6] = [
     Color::Rgb(214, 122, 90),
     Color::Rgb(108, 168, 220),
@@ -196,7 +222,13 @@ fn fill_block(buf: &mut Buffer, col0: i32, row0: i32, dev_w: i32, dev_h: i32, co
 }
 
 /// Compose the cell-tier office (T4/T5/T6) into `buf` within `view.area`.
-pub fn compose_cells_into(buf: &mut Buffer, office: &OfficeState, assets: &AssetStore, view: &View) {
+pub fn compose_cells_into(
+    buf: &mut Buffer,
+    office: &OfficeState,
+    assets: &AssetStore,
+    chars: &CharSpriteStore,
+    view: &View,
+) {
     let zoom = view.zoom as i32;
 
     // ── Floor / wall layer ──────────────────────────────────────────────────
@@ -214,7 +246,7 @@ pub fn compose_cells_into(buf: &mut Buffer, office: &OfficeState, assets: &Asset
     }
 
     // ── Z-sorted drawables ──────────────────────────────────────────────────
-    for d in collect_drawables(office, assets) {
+    for d in collect_drawables(office, assets, chars) {
         let (c0, r0) = view.world_to_cell(d.world_x, d.world_y);
         match (d.sprite, d.placeholder) {
             (Some(sprite), _) => {
@@ -398,7 +430,8 @@ mod tests {
         let nid = assets.register_request("DESK");
         assets.on_frame(nid, 0, true, &png).unwrap();
 
-        compose_cells_into(&mut buf, &office, &assets, &view);
+        let chars = CharSpriteStore::new();
+        compose_cells_into(&mut buf, &office, &assets, &chars, &view);
 
         // Floor was painted somewhere (at least one cell has the floor bg).
         let painted_floor = (0..area.width)
@@ -411,6 +444,40 @@ mod tests {
             .flat_map(|x| (0..area.height).map(move |y| (x, y)))
             .any(|(x, y)| buf[(x, y)].fg == Color::Rgb(200, 40, 40));
         assert!(painted_desk, "expected desk sprite rasterized");
+    }
+
+    #[test]
+    fn compose_cells_paints_character_sprite_when_sheet_present() {
+        let mut office = office_with_desk();
+        office.camera_follow_id = None;
+        office.add_agent(1, Some(0), Some(0), None, true);
+
+        // Build a solid-magenta 112×96 char sheet for palette 0.
+        let mut store = CharSpriteStore::new();
+        let sheet = crate::assets::DecodedAsset {
+            width: 112,
+            height: 96,
+            rgba: {
+                let mut v = vec![0u8; 112 * 96 * 4];
+                for px in v.chunks_exact_mut(4) {
+                    px.copy_from_slice(&[255, 0, 255, 255]);
+                }
+                v
+            },
+        };
+        store.ingest(0, sheet);
+        store.ensure(0, 0);
+
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        let view = View::new(&office, area, 1);
+        compose_cells_into(&mut buf, &office, &AssetStore::new(), &store, &view);
+
+        // The character's magenta sprite rasterized somewhere (half-block fg).
+        let painted = (0..area.width)
+            .flat_map(|x| (0..area.height).map(move |y| (x, y)))
+            .any(|(x, y)| buf[(x, y)].fg == Color::Rgb(255, 0, 255));
+        assert!(painted, "expected character sprite rasterized");
     }
 
     #[test]
