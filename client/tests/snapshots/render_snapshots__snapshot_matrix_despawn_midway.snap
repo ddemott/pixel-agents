@@ -1,0 +1,16 @@
+---
+source: tests/render_snapshots.rs
+expression: "render(&o, &store(0))"
+---
+
+
+
+
+
+
+
+
+
+
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+▀▀▀▀▀▀▀▀

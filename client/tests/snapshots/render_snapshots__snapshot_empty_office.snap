@@ -1,0 +1,5 @@
+---
+source: tests/render_snapshots.rs
+expression: "render(&o, &CharSpriteStore::new())"
+---
+

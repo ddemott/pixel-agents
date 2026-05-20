@@ -55,6 +55,10 @@ rand = { version = "0.8", features = ["small_rng"] }
 # wezterm-term — NOT on crates.io, deferred to Phase 3
 # wezterm-term = "..."
 
+[dev-dependencies]
+# Snapshot testing for the tier × scene render matrix (Phase 3 Day 22)
+insta = "1"
+
 [profile.release]
 strip = "symbols"
 opt-level = 3

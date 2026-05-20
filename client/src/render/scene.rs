@@ -29,7 +29,10 @@ use ratatui::style::Color;
 
 use crate::assets::AssetStore;
 use crate::office::state::OfficeState;
-use crate::office::types::{CharacterState, TileType};
+use crate::office::types::{
+    CharacterState, TileType, BUBBLE_SITTING_OFFSET_PX, BUBBLE_VERTICAL_OFFSET_PX,
+};
+use crate::render::bubbles::bubble_sprite;
 use crate::render::cells::rasterize_halfblock;
 use crate::render::char_sprites::CharSpriteStore;
 use crate::render::kitty::{
@@ -127,6 +130,9 @@ struct Drawable<'a> {
     world_x: f32,
     world_y: f32,
     sprite: Option<&'a crate::assets::DecodedAsset>,
+    /// Owned RGBA frame (matrix spawn/despawn composite). Takes priority over
+    /// `sprite` when present.
+    owned: Option<crate::assets::DecodedAsset>,
     /// Placeholder colour when there's no sprite yet (characters pre-Day-18).
     placeholder: Option<Color>,
     placeholder_px: (u32, u32),
@@ -150,6 +156,7 @@ fn collect_drawables<'a>(
             world_x: (f.col * TILE_SIZE) as f32,
             world_y: (f.row * TILE_SIZE) as f32,
             sprite: assets.get(&f.type_id),
+            owned: None,
             placeholder: None,
             placeholder_px: (TILE_SIZE as u32, TILE_SIZE as u32),
         });
@@ -163,23 +170,52 @@ fn collect_drawables<'a>(
         } else {
             0.0
         };
+        // World anchor: bottom-centre on (ch.x, ch.y + sit), sprite 16w × 32h.
+        let world_x = ch.x - 8.0;
+        let world_y = ch.y + sit - 32.0;
         match chars.get(ch.palette, ch.hue_shift).map(|set| set.frame(ch)) {
-            Some(frame) => out.push(Drawable {
-                z_y,
-                // Anchor bottom-centre on (ch.x, ch.y + sit): 16px wide, 32px tall.
-                world_x: ch.x - 8.0,
-                world_y: ch.y + sit - 32.0,
-                sprite: Some(frame),
-                placeholder: None,
-                placeholder_px: (16, 32),
-            }),
+            Some(frame) => {
+                // Selection outline: just behind the char, 1px white ring, when
+                // this is the selected agent and no matrix effect is running
+                // (webview skips the outline during spawn/despawn).
+                if office.selected_agent_id == Some(ch.id) && ch.matrix_effect.is_none() {
+                    out.push(Drawable {
+                        z_y: z_y - 0.5,
+                        world_x: world_x - 1.0,
+                        world_y: world_y - 1.0,
+                        sprite: None,
+                        owned: Some(crate::render::outline::outline_sprite(frame)),
+                        placeholder: None,
+                        placeholder_px: (18, 34),
+                    });
+                }
+                // Matrix spawn/despawn composites over the base frame.
+                let owned = ch.matrix_effect.map(|kind| {
+                    crate::render::matrix::render_matrix_frame(
+                        frame,
+                        kind,
+                        ch.matrix_effect_timer,
+                        &ch.matrix_effect_seeds,
+                    )
+                });
+                out.push(Drawable {
+                    z_y,
+                    world_x,
+                    world_y,
+                    sprite: Some(frame),
+                    owned,
+                    placeholder: None,
+                    placeholder_px: (16, 32),
+                });
+            }
             None => {
                 let tint = PLACEHOLDER_PALETTE[(ch.palette as usize) % PLACEHOLDER_PALETTE.len()];
                 out.push(Drawable {
                     z_y,
-                    world_x: ch.x - 8.0, // centre a 16px-wide marker
-                    world_y: ch.y + sit - 24.0, // bottom-align ~24px tall
+                    world_x,
+                    world_y: ch.y + sit - 24.0, // placeholder is ~24px tall
                     sprite: None,
+                    owned: None,
                     placeholder: Some(tint),
                     placeholder_px: (16, 24),
                 });
@@ -248,7 +284,9 @@ pub fn compose_cells_into(
     // ── Z-sorted drawables ──────────────────────────────────────────────────
     for d in collect_drawables(office, assets, chars) {
         let (c0, r0) = view.world_to_cell(d.world_x, d.world_y);
-        match (d.sprite, d.placeholder) {
+        // Owned matrix frame wins over the static sprite when present.
+        let sprite = d.owned.as_ref().or(d.sprite);
+        match (sprite, d.placeholder) {
             (Some(sprite), _) => {
                 let (scaled, sw, sh) = scale_rgba(&sprite.rgba, sprite.width, sprite.height, view.zoom as u32);
                 rasterize_halfblock(&scaled, sw, sh, buf, c0.max(0) as u16, r0.max(0) as u16);
@@ -259,6 +297,27 @@ pub fn compose_cells_into(
             }
             (None, None) => {}
         }
+    }
+
+    // ── Speech bubbles (always on top of characters) ─────────────────────────
+    for ch in office.characters.values() {
+        let Some(kind) = ch.bubble_type else { continue };
+        if ch.matrix_effect.is_some() {
+            continue; // hidden during spawn/despawn, matching state.rs
+        }
+        let sprite = bubble_sprite(kind);
+        let sit = if ch.state == CharacterState::Type {
+            BUBBLE_SITTING_OFFSET_PX as f32
+        } else {
+            0.0
+        };
+        // Centred above the head: bottom at ch.y + sit - BUBBLE_VERTICAL_OFFSET_PX
+        // minus the sprite height and a 1px gap (mirrors the webview math).
+        let world_x = ch.x - sprite.width as f32 / 2.0;
+        let world_y = ch.y + sit - BUBBLE_VERTICAL_OFFSET_PX as f32 - sprite.height as f32 - 1.0;
+        let (c0, r0) = view.world_to_cell(world_x, world_y);
+        let (scaled, sw, sh) = scale_rgba(&sprite.rgba, sprite.width, sprite.height, view.zoom as u32);
+        rasterize_halfblock(&scaled, sw, sh, buf, c0.max(0) as u16, r0.max(0) as u16);
     }
 }
 
@@ -478,6 +537,76 @@ mod tests {
             .flat_map(|x| (0..area.height).map(move |y| (x, y)))
             .any(|(x, y)| buf[(x, y)].fg == Color::Rgb(255, 0, 255));
         assert!(painted, "expected character sprite rasterized");
+    }
+
+    /// Build a CharSpriteStore with a solid-magenta sheet for `palette`.
+    fn magenta_store(palette: u8) -> CharSpriteStore {
+        let mut store = CharSpriteStore::new();
+        let mut rgba = vec![0u8; 112 * 96 * 4];
+        for px in rgba.chunks_exact_mut(4) {
+            px.copy_from_slice(&[255, 0, 255, 255]);
+        }
+        store.ingest(palette, crate::assets::DecodedAsset { width: 112, height: 96, rgba });
+        store.ensure(palette, 0);
+        store
+    }
+
+    #[test]
+    fn compose_cells_paints_matrix_head_during_spawn() {
+        let mut office = office_with_desk();
+        office.camera_follow_id = None;
+        office.add_agent(1, Some(0), Some(0), None, false); // spawn effect armed
+        let store = magenta_store(0);
+
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        let view = View::new(&office, area, 1);
+        compose_cells_into(&mut buf, &office, &AssetStore::new(), &store, &view);
+
+        // Matrix head colour (#ccffcc) painted somewhere during the sweep.
+        let painted = (0..area.width)
+            .flat_map(|x| (0..area.height).map(move |y| (x, y)))
+            .any(|(x, y)| buf[(x, y)].fg == Color::Rgb(0xcc, 0xff, 0xcc));
+        assert!(painted, "expected matrix head rasterized during spawn");
+    }
+
+    #[test]
+    fn compose_cells_paints_white_outline_for_selected_char() {
+        let mut office = office_with_desk();
+        office.camera_follow_id = None;
+        office.add_agent(1, Some(0), Some(0), None, true); // skip spawn matrix
+        office.selected_agent_id = Some(1);
+        let store = magenta_store(0);
+
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        let view = View::new(&office, area, 1);
+        compose_cells_into(&mut buf, &office, &AssetStore::new(), &store, &view);
+
+        // White ring (#FFFFFF) painted around the magenta char.
+        let painted = (0..area.width)
+            .flat_map(|x| (0..area.height).map(move |y| (x, y)))
+            .any(|(x, y)| buf[(x, y)].fg == Color::Rgb(255, 255, 255));
+        assert!(painted, "expected white selection outline");
+    }
+
+    #[test]
+    fn compose_cells_paints_waiting_bubble_above_char() {
+        let mut office = office_with_desk();
+        office.camera_follow_id = None;
+        office.add_agent(1, Some(0), Some(0), None, true);
+        office.show_waiting_bubble(1);
+
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        let view = View::new(&office, area, 1);
+        compose_cells_into(&mut buf, &office, &AssetStore::new(), &CharSpriteStore::new(), &view);
+
+        // Bubble border colour (#555566) painted somewhere (fg via half-block).
+        let painted = (0..area.width)
+            .flat_map(|x| (0..area.height).map(move |y| (x, y)))
+            .any(|(x, y)| buf[(x, y)].fg == Color::Rgb(0x55, 0x55, 0x66));
+        assert!(painted, "expected waiting bubble rasterized");
     }
 
     #[test]

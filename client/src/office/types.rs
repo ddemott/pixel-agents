@@ -26,8 +26,23 @@ pub const AUTO_ON_SIDE_DEPTH: i32 = 2;
 pub const CHARACTER_HIT_HALF_WIDTH: i32 = 8;
 pub const CHARACTER_HIT_HEIGHT: i32 = 24;
 pub const CHARACTER_SITTING_OFFSET_PX: i32 = 6;
+/// Speech-bubble placement (mirrors webview constants.ts). Bubbles use their own
+/// sitting offset (10), distinct from the character's (6).
+pub const BUBBLE_SITTING_OFFSET_PX: i32 = 10;
+pub const BUBBLE_VERTICAL_OFFSET_PX: i32 = 24;
+pub const BUBBLE_FADE_DURATION_SEC: f32 = 0.5;
 pub const FURNITURE_ANIM_INTERVAL_SEC: f32 = 0.2;
 pub const MATRIX_SPRITE_COLS: usize = 16;
+/// Matrix spawn/despawn effect params (mirror webview constants.ts).
+pub const MATRIX_SPRITE_ROWS: usize = 24;
+pub const MATRIX_TRAIL_LENGTH: f32 = 6.0;
+pub const MATRIX_COLUMN_STAGGER_RANGE: f32 = 0.3;
+pub const MATRIX_FLICKER_FPS: f32 = 30.0;
+pub const MATRIX_FLICKER_VISIBILITY_THRESHOLD: u32 = 180;
+pub const MATRIX_TRAIL_OVERLAY_ALPHA: f32 = 0.6;
+pub const MATRIX_TRAIL_EMPTY_ALPHA: f32 = 0.5;
+pub const MATRIX_TRAIL_MID_THRESHOLD: f32 = 0.33;
+pub const MATRIX_TRAIL_DIM_THRESHOLD: f32 = 0.66;
 pub const NUM_PALETTES: usize = 6;
 
 // ── Tile type ─────────────────────────────────────────────────────────────────

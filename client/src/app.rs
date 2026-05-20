@@ -301,6 +301,15 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                 for (palette, hue) in combos {
                     state.char_sprites.ensure(palette, hue);
                 }
+                // Selection drives the white outline: a focused PTY agent is the
+                // selected office character (hover not wired at cell tiers).
+                let selected = match state.focus {
+                    FocusMode::PtyAgent(id) => Some(id),
+                    _ => None,
+                };
+                if let Some(office) = state.office.as_mut() {
+                    office.selected_agent_id = selected;
+                }
                 // T1-K/T1-O: transmit any newly-decoded sprites once. `a=t` is
                 // display-free, so emitting out-of-band of the draw is safe.
                 // (Spatial placement/placeholders land with the Day 17 render
@@ -434,6 +443,18 @@ fn handle_event_envelope(evt: crate::daemon::wire::Evt, state: &mut AppState) {
                 serde_json::from_value::<crate::agents::AgentSnapshot>(evt.data.clone())
             {
                 if !state.agents.iter().any(|a| a.id() == snap.id) {
+                    // Mirror into the office sim so a character spawns (with the
+                    // matrix spawn effect). Palette/hue/seat come from the daemon
+                    // so the character matches its assigned skin.
+                    if let Some(office) = state.office.as_mut() {
+                        office.add_agent(
+                            snap.id,
+                            Some(snap.palette),
+                            Some(snap.hue_shift),
+                            snap.seat_id.as_deref(),
+                            false,
+                        );
+                    }
                     state.agents.push(AgentState::new(snap));
                 }
             }
@@ -444,28 +465,47 @@ fn handle_event_envelope(evt: crate::daemon::wire::Evt, state: &mut AppState) {
                 if let Some(a) = state.find_agent_mut(id) {
                     a.status = AgentStatus::Exited;
                 }
+                // Despawn matrix effect; the character self-removes at completion.
+                if let Some(office) = state.office.as_mut() {
+                    office.remove_agent(id);
+                }
             }
         }
         "agent.statusChanged" => {
             if let Some(id) = evt.data.get("id").and_then(|v| v.as_i64()) {
                 let id = id as i32;
+                let status_str =
+                    evt.data.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                let tool = evt
+                    .data
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if let Some(a) = state.find_agent_mut(id) {
-                    let status_str =
-                        evt.data.get("status").and_then(|v| v.as_str()).unwrap_or("");
                     a.status = match status_str {
-                        "active" => {
-                            let tool = evt
-                                .data
-                                .get("tool")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            AgentStatus::Active(tool)
-                        }
+                        "active" => AgentStatus::Active(tool.clone()),
                         "waiting" => AgentStatus::Waiting,
                         "exited" => AgentStatus::Exited,
                         _ => AgentStatus::Idle,
                     };
+                }
+                // Drive the office FSM + speech bubbles off the same event.
+                if let Some(office) = state.office.as_mut() {
+                    match status_str {
+                        "active" => {
+                            office.set_agent_active(id, true);
+                            office.set_agent_tool(
+                                id,
+                                if tool.is_empty() { None } else { Some(tool) },
+                            );
+                        }
+                        "waiting" => {
+                            office.set_agent_active(id, false);
+                            office.show_waiting_bubble(id);
+                        }
+                        _ => office.set_agent_active(id, false),
+                    }
                 }
             }
         }
@@ -578,6 +618,59 @@ fn render(frame: &mut ratatui::Frame, state: &mut AppState) {
     state.hit_rects = chrome::draw(frame, &state.focus, state.zoom, state.agents.len());
 }
 
+/// Short activity string for the tool overlay (mirrors ToolOverlay's
+/// `getActivityLabel`): tool name when active, "Needs approval" when waiting.
+fn activity_label(status: &AgentStatus) -> &str {
+    match status {
+        AgentStatus::Active(tool) if !tool.is_empty() => tool.as_str(),
+        AgentStatus::Active(_) => "Working",
+        AgentStatus::Waiting => "Needs approval",
+        AgentStatus::Exited => "Exited",
+        AgentStatus::Idle => "Idle",
+    }
+}
+
+/// Floating activity label above the selected character (Day 21 tool overlay).
+fn draw_tool_overlay(
+    buf: &mut ratatui::buffer::Buffer,
+    office: &crate::office::state::OfficeState,
+    state: &AppState,
+    view: &View,
+    inner: Rect,
+) {
+    let Some(id) = office.selected_agent_id else { return };
+    let Some(ch) = office.characters.get(&id) else { return };
+    if ch.matrix_effect.is_some() {
+        return; // hidden during spawn/despawn
+    }
+    let label = state
+        .agents
+        .iter()
+        .find(|a| a.id() == id)
+        .map(|a| activity_label(&a.status))
+        .unwrap_or("Idle");
+    let text = format!(" {label} ");
+    // Above the head: the char sprite top sits ~32 world px above ch.y.
+    let (cx, cy) = view.world_to_cell(ch.x, ch.y - 32.0);
+    let row = cy - 1;
+    let col = cx - text.chars().count() as i32 / 2;
+    if row < inner.top() as i32 || row >= inner.bottom() as i32 {
+        return;
+    }
+    let style = Style::default().fg(Color::Black).bg(Color::Rgb(0xee, 0xee, 0xff));
+    let x0 = col.max(inner.left() as i32);
+    if x0 >= inner.right() as i32 {
+        return; // off the right edge — nothing to draw (avoids width underflow)
+    }
+    buf.set_stringn(
+        x0 as u16,
+        row as u16,
+        &text,
+        inner.right() as usize - x0 as usize,
+        style,
+    );
+}
+
 fn draw_main(frame: &mut ratatui::Frame, area: Rect, state: &AppState) {
     // Reconnect overlay takes over the whole main area
     if let Some(ref rs) = state.reconnect {
@@ -611,6 +704,7 @@ fn draw_main(frame: &mut ratatui::Frame, area: Rect, state: &AppState) {
             frame.render_widget(block, area);
             let view = View::new(office, inner, state.zoom as u16);
             compose_cells_into(frame.buffer_mut(), office, &state.assets, &state.char_sprites, &view);
+            draw_tool_overlay(frame.buffer_mut(), office, state, &view, inner);
             return;
         }
     }
@@ -718,6 +812,96 @@ mod tests {
 
     fn make_state() -> AppState {
         AppState::new(Keymap::load())
+    }
+
+    /// AppState with a small all-floor office so the event→office bridge has a
+    /// sim to mutate.
+    fn make_state_with_office() -> AppState {
+        use crate::office::catalog::FurnitureCatalog;
+        use crate::office::state::OfficeState;
+        use crate::office::types::{OfficeLayout, TileType};
+        let n = 25;
+        let layout = OfficeLayout {
+            version: 1,
+            cols: 5,
+            rows: 5,
+            tiles: vec![TileType::Floor1; n],
+            furniture: vec![],
+            tile_colors: vec![None; n],
+        };
+        let mut s = make_state();
+        s.office = Some(OfficeState::new(FurnitureCatalog::empty(), layout, 1));
+        s
+    }
+
+    fn created_evt(id: i32, palette: u8) -> crate::daemon::wire::Evt {
+        crate::daemon::wire::Evt {
+            topic: "agent.created".into(),
+            seq: 1,
+            ts: 0,
+            data: serde_json::json!({
+                "id": id, "sessionId": "s", "palette": palette, "hueShift": 0
+            }),
+        }
+    }
+
+    fn status_evt(id: i32, status: &str, tool: &str) -> crate::daemon::wire::Evt {
+        crate::daemon::wire::Evt {
+            topic: "agent.statusChanged".into(),
+            seq: 1,
+            ts: 0,
+            data: serde_json::json!({ "id": id, "status": status, "tool": tool }),
+        }
+    }
+
+    #[test]
+    fn bridge_created_spawns_office_character() {
+        let mut s = make_state_with_office();
+        handle_event_envelope(created_evt(7, 2), &mut s);
+        let office = s.office.as_ref().unwrap();
+        let ch = office.characters.get(&7).expect("character spawned");
+        assert_eq!(ch.palette, 2);
+        // skip_spawn_effect = false → matrix spawn effect armed.
+        assert_eq!(ch.matrix_effect, Some(crate::office::types::MatrixEffectKind::Spawn));
+    }
+
+    #[test]
+    fn bridge_exited_triggers_despawn_effect() {
+        let mut s = make_state_with_office();
+        handle_event_envelope(created_evt(7, 0), &mut s);
+        // Clear the spawn effect so we observe the despawn transition cleanly.
+        s.office.as_mut().unwrap().characters.get_mut(&7).unwrap().matrix_effect = None;
+        handle_event_envelope(
+            crate::daemon::wire::Evt {
+                topic: "agent.exited".into(),
+                seq: 2,
+                ts: 0,
+                data: serde_json::json!({ "id": 7 }),
+            },
+            &mut s,
+        );
+        let ch = s.office.as_ref().unwrap().characters.get(&7).expect("still present mid-despawn");
+        assert_eq!(ch.matrix_effect, Some(crate::office::types::MatrixEffectKind::Despawn));
+    }
+
+    #[test]
+    fn bridge_status_active_sets_tool_and_active() {
+        let mut s = make_state_with_office();
+        handle_event_envelope(created_evt(7, 0), &mut s);
+        handle_event_envelope(status_evt(7, "active", "Read"), &mut s);
+        let ch = s.office.as_ref().unwrap().characters.get(&7).unwrap();
+        assert!(ch.is_active);
+        assert_eq!(ch.current_tool.as_deref(), Some("Read"));
+    }
+
+    #[test]
+    fn bridge_status_waiting_shows_bubble_and_deactivates() {
+        let mut s = make_state_with_office();
+        handle_event_envelope(created_evt(7, 0), &mut s);
+        handle_event_envelope(status_evt(7, "waiting", ""), &mut s);
+        let ch = s.office.as_ref().unwrap().characters.get(&7).unwrap();
+        assert!(!ch.is_active);
+        assert_eq!(ch.bubble_type, Some(crate::office::types::BubbleType::Waiting));
     }
 
     #[test]

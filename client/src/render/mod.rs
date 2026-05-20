@@ -1,7 +1,9 @@
 pub mod b64;
+pub mod bubbles;
 pub mod cells;
 pub mod char_sprites;
 pub mod colorize;
+pub mod outline;
 pub mod iterm2;
 pub mod kitty;
 pub mod matrix;
