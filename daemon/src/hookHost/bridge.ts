@@ -80,6 +80,12 @@ export class DaemonHookBridge {
       case 'PostToolUseFailure':
         this.onPostToolUse(sessionId);
         return;
+      case 'SubagentStart':
+        this.onSubagent(sessionId, 'agent.subagentStart', raw);
+        return;
+      case 'SubagentStop':
+        this.onSubagent(sessionId, 'agent.subagentEnd', raw);
+        return;
       case 'Stop':
         this.emitStatus(sessionId, 'idle');
         return;
@@ -168,6 +174,24 @@ export class DaemonHookBridge {
     if (!toolId) return;
     this.notifyHookDelivered(agentId);
     this.emit(agentId, { type: 'agent.toolDone', id: agentId, toolId });
+  }
+
+  /**
+   * SubagentStart / SubagentStop. Scoped to the *parent* agent (the session
+   * running the Task tool) so clients render the parent character's subtask
+   * state. Carries the optional `tool_use_id` when present so a future client
+   * can pair start/stop to a specific Task invocation.
+   */
+  private onSubagent(
+    sessionId: string,
+    type: 'agent.subagentStart' | 'agent.subagentEnd',
+    raw: Record<string, unknown>,
+  ): void {
+    const agentId = this.sessionToAgentId.get(sessionId);
+    if (agentId === undefined) return;
+    this.notifyHookDelivered(agentId);
+    const toolUseId = typeof raw.tool_use_id === 'string' ? raw.tool_use_id : undefined;
+    this.emit(agentId, { type, id: agentId, toolUseId });
   }
 
   private emitStatus(

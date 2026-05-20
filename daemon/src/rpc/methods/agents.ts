@@ -1,14 +1,43 @@
 import * as crypto from 'crypto';
 
+import { pickDiversePalette } from '../../agents/palette.js';
 import { PtyHost } from '../../agents/ptyHost.js';
 import type { PersistedAgent } from '../../agents/registry.js';
 import { classifyExit, resolveJsonlPath } from '../../agents/resume.js';
-import { err, type Handler, type MethodRegistry, ok } from '../dispatch.js';
+import { type DispatchContext, err, type Handler, type MethodRegistry, ok } from '../dispatch.js';
 import { BINARY_MAX_FRAME, encodeAsset } from '../framing.js';
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
 const KILL_GRACE_MS = 2000;
+
+/**
+ * Handle a live agent's PTY exit: drop it from the live set, stop polling,
+ * classify the exit, and emit the matching events. A missing/upgraded `claude`
+ * binary additionally emits `agent.spawnFailed` so a fresh spawn that dies
+ * immediately toasts like `reviveAgentsOnBoot` does (not just a generic exit).
+ * Clean user exits are removed from persistence so the next boot won't `--resume`
+ * a closed session. Exported for direct unit testing of the exit semantics.
+ */
+export function handleAgentExit(
+  ctx: DispatchContext,
+  agent: { agentId: number; cwd: string; sessionId: string },
+  exitCode: number,
+  signal: number | undefined,
+): void {
+  const { agentId, cwd, sessionId } = agent;
+  ctx.liveAgents.remove(agentId);
+  ctx.jsonlPoller?.stop(agentId);
+  const reason = classifyExit(exitCode, signal);
+  ctx.sink.emitTo(agentId, { type: 'agent.exited', id: agentId, exitCode, signal, reason });
+  // Live spawn keeps no early stderr buffer, so only exit-127 `claude_missing`
+  // is detectable here, not the exit-2 version-mismatch `claude_upgraded`.
+  if (reason === 'claude_missing' || reason === 'claude_upgraded') {
+    ctx.sink.emitTo(agentId, { type: 'agent.spawnFailed', id: agentId, sessionId, reason });
+  }
+  if (reason === 'user') ctx.agents.remove(cwd, agentId);
+  ctx.logger.info({ module: 'agentSpawn', agentId, exitCode, signal, reason }, 'pty exited');
+}
 
 interface ListParams {
   cwd?: string;
@@ -126,26 +155,8 @@ export function registerAgentMethods(reg: MethodRegistry): void {
         { agentId, command, args, cwd, cols, rows, logger: ctx.logger },
         {
           onData: (bytes) => ctx.sink.broadcastPty(agentId, bytes),
-          onExit: (exitCode, signal) => {
-            ctx.liveAgents.remove(agentId);
-            ctx.jsonlPoller?.stop(agentId);
-            const reason = classifyExit(exitCode, signal);
-            ctx.sink.emitTo(agentId, {
-              type: 'agent.exited',
-              id: agentId,
-              exitCode,
-              signal,
-              reason,
-            });
-            // Clean exits (user-initiated /exit) remove from persistence so
-            // the next daemon boot doesn't attempt --resume for a closed session.
-            // Crashes keep the entry so --resume can revive on restart.
-            if (reason === 'user') ctx.agents.remove(cwd, agentId);
-            ctx.logger.info(
-              { module: 'agentSpawn', agentId, exitCode, signal, reason },
-              'pty exited',
-            );
-          },
+          onExit: (exitCode, signal) =>
+            handleAgentExit(ctx, { agentId, cwd, sessionId }, exitCode, signal),
         },
       );
     } catch (e) {
@@ -165,11 +176,13 @@ export function registerAgentMethods(reg: MethodRegistry): void {
     // Start JSONL polling. Seed offset at 0 — the file doesn't exist yet.
     ctx.jsonlPoller?.start(agentId, sessionId, cwd, resolveJsonlPath(cwd, sessionId), 0);
 
+    // Diverse skin: least-used palette, hue-shifted once palettes start repeating.
+    const { palette, hueShift } = pickDiversePalette(ctx.agents.forCwd(cwd));
     const persisted: PersistedAgent = {
       id: agentId,
       sessionId,
-      palette: 0,
-      hueShift: 0,
+      palette,
+      hueShift,
       lastSeenAt: Date.now(),
     };
     ctx.agents.upsert(cwd, persisted);
