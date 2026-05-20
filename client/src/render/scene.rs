@@ -64,7 +64,9 @@ impl View {
         }
     }
 
-    /// World-pixel point → screen cell `(col, row)`. May be off-screen (caller clips).
+    /// World-pixel point → screen cell `(col, row)` for **cell tiers** (half-block:
+    /// 1 sprite-px column = 1 cell column, 2 sprite-px rows = 1 cell row). May be
+    /// off-screen (caller clips).
     pub fn world_to_cell(&self, wx: f32, wy: f32) -> (i32, i32) {
         let dev_x = (wx * self.zoom as f32) as i32;
         let dev_y = (wy * self.zoom as f32) as i32;
@@ -72,6 +74,18 @@ impl View {
         // 2 device rows per cell row (half-block).
         let row = self.area.y as i32 + self.area.height as i32 / 2 + (dev_y - self.cam_dev_y) / 2;
         (col, row)
+    }
+
+    /// World-pixel point → terminal **device pixel** `(x, y)` for image tiers
+    /// (true-pixel geometry; cells are `cell_w × cell_h` px). Same camera as
+    /// `world_to_cell` — both transforms live on `View` so a camera change flows
+    /// to both. Caller derives cell + sub-cell via `compute_placement`.
+    pub fn world_to_device_px(&self, wx: f32, wy: f32, cell_w: u16, cell_h: u16) -> (i32, i32) {
+        let dev_x = (wx * self.zoom as f32) as i32;
+        let dev_y = (wy * self.zoom as f32) as i32;
+        let center_x = (self.area.x as i32 + self.area.width as i32 / 2) * cell_w as i32;
+        let center_y = (self.area.y as i32 + self.area.height as i32 / 2) * cell_h as i32;
+        (center_x + dev_x - self.cam_dev_x, center_y + dev_y - self.cam_dev_y)
     }
 }
 
@@ -238,14 +252,13 @@ pub fn image_placements(
     let mut items: Vec<(f32, ImagePlacement)> = Vec::new();
     for f in &office.furniture {
         let Some(sprite) = assets.get(&f.type_id) else { continue };
-        // Screen cell origin (reuse the half-block transform for cell col; for
-        // image tiers the row isn't halved, so recompute the device row directly).
-        let dev_x = ((f.col * TILE_SIZE) as f32 * view.zoom as f32) as i32 - view.cam_dev_x
-            + view.area.x as i32 * cell_w as i32
-            + (view.area.width as i32 / 2) * cell_w as i32;
-        let dev_y = ((f.row * TILE_SIZE) as f32 * view.zoom as f32) as i32 - view.cam_dev_y
-            + view.area.y as i32 * cell_h as i32
-            + (view.area.height as i32 / 2) * cell_h as i32;
+        // Image-tier device-pixel origin (true-pixel geometry, row not halved).
+        let (dev_x, dev_y) = view.world_to_device_px(
+            (f.col * TILE_SIZE) as f32,
+            (f.row * TILE_SIZE) as f32,
+            cell_w,
+            cell_h,
+        );
         if dev_x < 0 || dev_y < 0 {
             continue;
         }
