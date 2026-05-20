@@ -62,6 +62,15 @@ function makeCtx(): {
     liveAgents,
     hookBridge,
     logger,
+    assetRegistry: {
+      getCatalog: () => ({ assets: [], rotationGroups: new Map(), stateGroups: new Map() }),
+      getAssets: () => [],
+      getPng: () => null,
+      updateExternalDirs: () => {},
+      reload: () => {},
+      setSink: () => {},
+      setLogger: () => {},
+    } as never,
     state: { layout: null, config: { externalAssetDirectories: [], logLevel: 'info' } },
     triggerShutdown: () => {},
   };

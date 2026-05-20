@@ -60,7 +60,7 @@ beforeEach(async () => {
       schemaVersion: 1,
       worldSeed: 0,
       layout: null,
-      assets: { catalog: [], characters: [], floors: [], walls: [] },
+      assets: { catalog: [], characterCount: 0, floorCount: 0, wallCount: 0 },
       agents: [],
     }),
     registry,
@@ -96,6 +96,7 @@ function makeDispatchContext(): DispatchContext {
     liveAgents: { get: () => undefined, list: () => [] } as never,
     hookBridge: bridge,
     logger: createNullLogger(),
+    assetRegistry: { getCatalog: () => ({ assets: [] }), getPng: () => null } as never,
     state: { layout: null, config: { externalAssetDirectories: [], logLevel: 'info' } },
     triggerShutdown: () => {},
   };

@@ -42,6 +42,7 @@ function emptyDispatchContext(): DispatchContext {
       setLevel: () => {},
       close: () => {},
     },
+    assetRegistry: { getCatalog: () => ({ assets: [] }), getPng: () => null } as never,
     state: { layout: null, config: { externalAssetDirectories: [], logLevel: 'info' } },
     triggerShutdown: () => {},
   };
@@ -56,7 +57,7 @@ function makeContext(overrides: Partial<ConnectionContext> = {}): ConnectionCont
       schemaVersion: 1,
       worldSeed: 0,
       layout: null,
-      assets: { catalog: [], characters: [], floors: [], walls: [] },
+      assets: { catalog: [], characterCount: 0, floorCount: 0, wallCount: 0 },
       agents: [],
     }),
     registry: new MethodRegistry(),
