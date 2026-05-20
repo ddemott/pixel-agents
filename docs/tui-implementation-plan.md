@@ -210,9 +210,11 @@ Phases 1 and 2 can start in parallel after Phase 0 lands. Phase 4 (PTY) and Phas
 
 ## 6. Phase 4 — PTY hosting
 
-**Goal.** Daemon spawns and hosts PTY, streams bytes over binary mux, client feeds them through `PtyByteTap` then `wezterm-term::Terminal`, user can type, resize, paste, mouse, scroll back. (Architecture §9.)
+**Goal.** Daemon spawns and hosts PTY, streams bytes over binary mux, client feeds them through `PtyByteTap` then the wezterm terminal model, user can type, resize, paste, mouse, scroll back. (Architecture §9.)
 
 **Parity items covered.** B1, B2, B3, B4 (MVP); B5, B6, B7 (Full).
+
+**Dependency sourcing — RESOLVED (pre-Phase-4).** Upstream `wezterm-term` was never published to crates.io, so the original "pin `=0.22.0`, vendor the fork as backstop" plan is inverted: the **fork is the source of record**. We depend on the Tattoy project's published fork family — `tattoy-wezterm-term = "=0.1.0-fork.5"` (MIT, pulls `tattoy-{termwiz,wezterm-cell,wezterm-surface,wezterm-escape-parser,wezterm-dynamic}` from crates.io; `image ^0.25` matches our pin). Pinned with `=` so the pre-1.0 `-fork.N` suffix can't silently bump. Crate root is `tattoy_wezterm_term`; `Terminal::advance_bytes(&[u8])` confirmed present via a compile-time smoke in `client/src/pty/mod.rs`. **Fallback** if the fork is abandoned: git dep on `github.com/wezterm/wezterm` `term` crate pinned to a rev (no crates.io publish exists). No vendoring needed.
 
 **Concrete tasks.**
 
@@ -238,7 +240,7 @@ Phases 1 and 2 can start in parallel after Phase 0 lands. Phase 4 (PTY) and Phas
 
 **Risks.**
 
-- _`wezterm-term::Terminal` API changes between 0.22 minors_ → pin `=0.22.0`; vendor `tattoy-wezterm-term`.
+- _Terminal-model API churn_ → pin `tattoy-wezterm-term = "=0.1.0-fork.5"` (exact, no `-fork.N` drift); fallback is a git-rev dep on upstream wezterm `term`. See "Dependency sourcing — RESOLVED" above.
 - _Image-escape passthrough breaks on alt display_ → only passthrough when `tier.supports_kitty_passthrough() && focused`.
 - _PTY-input ordering across NDJSON + binary_ → documented no-cross-channel-ordering; kernel TTY arbitrates.
 
@@ -440,7 +442,7 @@ Breakdown: Phase 0 (8) + Phase 1 (16) + Phase 2 (14) + Phase 3 MVP-only slice (1
 | #   | Risk                                                                 | Severity | Mitigation                                                                                                        | Owner      |
 | --- | -------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------- | ---------- |
 | 1   | Phase 0 introduces regression in dual-mode session detection         | High     | Fixture-based regression tests written before refactor; full Playwright e2e gate before merge                     | Engineer A |
-| 2   | `wezterm-term 0.22` API churn during build                           | Medium   | Pin `=0.22.0`; vendor `tattoy-wezterm-term` as backstop                                                           | Engineer B |
+| 2   | Terminal-model (`tattoy-wezterm-term`) API churn during build        | Medium   | Pin `=0.1.0-fork.5` (exact); fallback git-rev dep on upstream wezterm `term` (sourcing resolved pre-Phase-4)      | Engineer B |
 | 3   | FSM parity drift between TS engine and Rust port                     | High     | Shared JSON fixtures in `tests/fixtures/`; both suites consume same data; `worldSeed` tick-for-tick parity test   | Engineer B |
 | 4   | `--resume` failure paths leak agents into `agents.json` indefinitely | Medium   | Explicit drop-from-persistence on missing JSONL / stale JSONL / unknown session per §16 failure-paths table       | Engineer A |
 | 5   | Terminal compatibility matrix CI cost/flakiness                      | Medium   | Docker pin tags; `claude-mock` for hermetic E2E; Windows runners only PR-trigger                                  | Engineer B |

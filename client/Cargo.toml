@@ -52,8 +52,12 @@ anyhow = "1"
 # Seeded RNG — SmallRng for deterministic simulation (parity tests Day 8-9)
 rand = { version = "0.8", features = ["small_rng"] }
 
-# wezterm-term — NOT on crates.io, deferred to Phase 3
-# wezterm-term = "..."
+# Headless terminal emulator (PTY → grid) for Phase 4 PTY hosting.
+# Upstream `wezterm-term` is NOT published to crates.io; the Tattoy project's
+# published fork family (`tattoy-*`) is the source of record. Pinned with `=`
+# so the `-fork.N` pre-1.0 suffix can't silently bump. Fallback if this fork is
+# abandoned: git dep on github.com/wezterm/wezterm `term` crate (pin a rev).
+tattoy-wezterm-term = "=0.1.0-fork.5"
 
 [dev-dependencies]
 # Snapshot testing for the tier × scene render matrix (Phase 3 Day 22)

@@ -756,7 +756,7 @@ impl PtyClient {
 }
 ```
 
-The Cargo dependency: `wezterm-term = "0.22"`. Verified May 2026: this is a maintained, embeddable crate.
+The Cargo dependency: ~~`wezterm-term = "0.22"`~~. **Correction (sourcing resolved, 2026-05):** upstream `wezterm-term` was never published to crates.io. The actual dependency is the Tattoy project's published fork — `tattoy-wezterm-term = "=0.1.0-fork.5"` (MIT) — whose crate root is `tattoy_wezterm_term` but exposes the same `Terminal` / `advance_bytes` API used in the sample above (verified by a compile-time smoke in `client/src/pty/mod.rs`). The code sample's `wezterm_term::` paths map 1:1 to `tattoy_wezterm_term::`. See `docs/tui-implementation-plan.md` §6 "Dependency sourcing — RESOLVED" for the full rationale + the upstream-git fallback.
 
 ### Daemon side
 

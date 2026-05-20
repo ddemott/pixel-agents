@@ -14,6 +14,7 @@ pub mod focus;
 pub mod input_queue;
 pub mod keymap;
 pub mod office;
+pub mod pty;
 pub mod raw_mode;
 pub mod reconnect;
 pub mod render;

@@ -127,7 +127,7 @@ webview-ui/src/               — React + TypeScript (Vite)
       ToolOverlay.tsx          — Activity status label above hovered/selected character + close button
 
 client/                       — Rust TUI client (TUI port Phase 2+; Rust 1.95+, Cargo workspace)
-  Cargo.toml                  — workspace + package; pins: ratatui 0.30, ratatui-crossterm 0.1, crossterm 0.29, tokio 1, serde/serde_json 1, bytes 1, vte 0.15, tachyonfx 0.25, arboard 3, directories 6, image 0.25, anyhow 1
+  Cargo.toml                  — workspace + package; pins: ratatui 0.30, ratatui-crossterm 0.1, crossterm 0.29, tokio 1, serde/serde_json 1, bytes 1, vte 0.15, tachyonfx 0.25, arboard 3, directories 6, image 0.25, anyhow 1, tattoy-wezterm-term =0.1.0-fork.5 (Phase 4 terminal model — published Tattoy fork; upstream wezterm-term unpublished). dev: insta 1 (snapshot tests)
   src/
     main.rs                   — Thin bin: tokio::main → caps::detect() → app::run()
     lib.rs                    — Library crate (pub module tree) so tests/ can import the engine
@@ -144,6 +144,7 @@ client/                       — Rust TUI client (TUI port Phase 2+; Rust 1.95+
       outline.rs              — Day 21 selection outline: outline_sprite ports getOutlineSprite (1px white cardinal-dilation ring, hollow centre; (w+2)×(h+2)).
       char_sprites.rs         — Day 18 char sprites: slices 112×96 sheet (3 dir rows × 7 frames of 16×32) into walk=[0,1,2,1]/typing=[3,4]/reading=[5,6] per dir, LEFT=flipped RIGHT. CharSpriteStore lazily builds+caches CharacterSpriteSet per (palette,hue_shift), invalidates on sheet reload. CharacterSpriteSet::frame() ports getCharacterSprite (TYPE→reading/typing by tool, WALK→4-frame, IDLE→walk[1]). asset_id(p)→"char_p".
       scene.rs                — Day 17-21 compositor: View (world-px→screen-cell, camera-centred, half-block vertical halving), compose_cells_into (flat floor/wall + z-sorted Drawables: furniture sprites + char frames via CharSpriteStore + matrix-effect frames (owned) + selection outline behind selected char; then a top pass for speech bubbles; placeholder fallback until sheet arrives; chars bottom-centre anchored on (ch.x, ch.y+sit), sit=6 in TYPE → Buffer), scale_rgba (nearest-neighbour zoom), image_placements + compose_t1k_frame (image-tier geometry + Kitty frame bytes; still furniture-only — chars/bubbles/matrix/outline are cell-tier only). Wired into app.rs draw_main for cell tiers; tool-overlay label drawn separately in draw_main.
+    pty/mod.rs                — Phase 4 PTY hosting (stub): pins the terminal-model dependency sourcing (tattoy-wezterm-term fork) + compile-time API smoke for Terminal::advance_bytes. Integration is Phase 4.
     (also present from Phase 2-3, tracked in TODO.md: caps/, office/, focus.rs, chrome.rs, keymap.rs, agents.rs, reconnect.rs, tui.rs, input_queue.rs, raw_mode.rs)
     daemon/
       mod.rs                  — Re-exports connect()
