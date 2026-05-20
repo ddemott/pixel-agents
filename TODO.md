@@ -14,8 +14,6 @@ Phase 1 (daemon) + Phase 2 (TUI client foundation) complete. Phase 3 Day 1-14 do
 
 - [ ] _(deferred from Day 10-14)_ **Image-tier spatial composite** — every tier encoder so far (`kitty`, `iterm2`, `sixel`) emits bytes for a _single sprite_ but nothing positions sprites z-sorted on the office grid yet. That compositor is **Day 17** (no spatial office render exists; `draw_main` is agent-list text). The encoders were built first as tested units; Day 17 plugs them in.
 - [ ] _(surfaced Day 10)_ Asset request path covers **furniture only** (`request_assets()` iterates `catalog.entries`). Character sprites (`char_0..5.png`) arrive with **Day 18**; floor/wall tiles need their own request path eventually.
-- [ ] **Day 17 — Z-sort + render pipeline** (FSM tick → static layers → z-sorted entities → back-buffer → chrome → diff → Ratatui emit).
-- [ ] **Day 18-22** — Character sprites + palette, speech bubbles, matrix spawn/despawn, tool overlay + selection outline, `insta` snapshot tests per tier × scene.
 
 ## Recently done
 
