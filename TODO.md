@@ -17,6 +17,7 @@ Phase 1 (daemon) + Phase 2 (TUI client foundation) complete. Phase 3 Day 1-14 do
 
 ## Recently done
 
+- ✅ Phase 0-1 technical-debt batch. **SubagentStart/SubagentStop** — bridge now emits `agent.subagentStart`/`agent.subagentEnd` scoped to the parent agent (+ optional `tool_use_id`), no longer dropped. **Diverse palette** — `agent.spawn` ports `pickDiversePalette` (least-used base palette, hue-shift on repeat) instead of `palette:0` for all; new `daemon/src/agents/palette.ts`. **Live spawnFailed** — extracted `handleAgentExit()`; a fresh spawn dying on a missing binary (exit 127) emits `agent.spawnFailed`, matching `reviveAgentsOnBoot`. **Config preservation** — extension `writeConfig` now read-merge-writes (`mergeConfig`) so the daemon's `logLevel` survives extension saves. **Boot coverage** — new `discovery.test.ts` pins the daemon.json write/read + PID liveness + ownership-guarded cleanup contract (boot was smoke-only). **PtyHost flow control** — added dormant `pause()/resume()`; cooperative backpressure deliberately rejected (ring is OOM ceiling — would freeze all viewers on one wedge), rationale documented. **Doc/decision items** — transitional comment on the `server.json` hook-discovery fallthrough; `kittyIds` djb2-vs-allocator reconcile documented (decide at Day 17); `hooks/package.json` CJS-scope rationale inlined. +22 daemon tests (palette 4, bridge 3, exit 3, ptyHost 2, configMerge 3, discovery 7). 319/319 daemon tests pass, check-types clean.
 - ✅ Phase 3 Day 12-14 — Image-tier encoders (T1-O / T2 / T3). **Day 12 T1-O** (`render/kitty.rs`): refactored placement into shared `encode_placement(is_virtual…)`; added `encode_non_virtual_placement` (no `U=1`, places already-transmitted image at cursor — split upload `a=t` / placement `a=p` so each sprite ships once) + `cursor_to(col,row)` (1-based CSI). Upload gate in `app.rs` extended to `KittyK | KittyO`. **Day 13 T2** (`render/iterm2.rs`): `encode_inline()` OSC 1337 `File=inline=1` (raw `size=`, cell-unit `width`/`height`, `preserveAspectRatio=0`, BEL term) + `rgba_to_png()` re-encode for the pipeline. **Day 14 T3** (`render/sixel.rs`): `encode_sixel()` RGBA→Sixel DCS — exact palette (≤256 unique colours) with 3-3-2 quantization fallback, alpha-threshold transparency (`P2=1`), 6px bands, `$` overlay / `-` band sep, `!n` RLE (≥4), 0-100 channel scale. Shared base64 extracted to `render/b64.rs` (RFC 4648 vectors). **Verification ceiling unchanged**: byte-level tests vs documented protocol specs (no T1/T2/T3 terminal in env); spatial composite is Day 17. 143 lib unit (+24) + 4 parity pass, zero rustc warnings.
 - ✅ Daemon test-type repair (`9d41342`). `check-types` had been red since `6daa69e` (Day 1-3): four test fixtures used the old `WorldSnapshot.assets` array shape and lacked `assetRegistry` on their `DispatchContext` mocks. Fixed `spawn.test.ts` / `connection.test.ts` / `integration.test.ts` (assetRegistry stub + counts shape). This had silently blocked `git push` (pre-push gate) — Phase 3 Day 1-11 commits were stuck local until this landed. Daemon 297/297 green, check-types clean.
 - ✅ Phase 3 Day 10-11 — Asset blob ingestion + T1-K Kitty mechanism. `client/src/assets.rs`: `AssetStore` — `string_asset_id()` (djb2, mirrors daemon `stringAssetId`), per-`(numericId, tier)` chunk accumulator, PNG→RGBA8 decode via `image` crate on the final frame; `register_request`/`on_frame`/`get`/`iter`. `app.rs` wiring: `Frame::Asset` handled in the event loop (was ignored); on connect, `request_assets()` fires `assets.requestBlob {assetId, tier:0}` per catalog entry; `PendingKind::AssetBlob`. `client/src/render/kitty.rs`: full unicode-placeholder encoder — `encode_transmit` (`a=t,f=32`, base64 chunked at 4096, control keys first-chunk-only, `m=1`/`m=0`), `encode_virtual_placement` (`a=p,U=1`, `X=`/`Y=` sub-cell offsets), `placeholder_text` (`U+10EEEE` grid, row/col diacritics + image id in fg SGR + high byte via 3rd diacritic), `compute_placement` (device-px → cell + sub-cell geometry), `KittyUploader` (per-session transmit dedup). 297-entry `DIACRITICS` table pulled verbatim from kitty `gen/rowcolumn-diacritics.txt`. Image id = `djb2(assetId)` (matches wire; daemon's SHA1 `kittyIds` allocator is unused — noted for later reconcile). Uploads emitted out-of-band before draw, gated on `RenderingCap::KittyK` (`a=t` is display-free). Self-contained base64 encoder (no new dep). **Verification ceiling**: byte-level + geometry unit tests only — no Kitty terminal reachable in this env, and the spatial office composite (placeholders as Ratatui spans) is deferred to Day 17. 126 lib unit (+18) + 4 parity tests pass, zero rustc warnings.
@@ -35,41 +36,31 @@ Phase 1 (daemon) + Phase 2 (TUI client foundation) complete. Phase 3 Day 1-14 do
 
 ## Technical debt surfaced during Phase 0-1
 
-- [ ] `DaemonHookBridge` drops `SubagentStart` / `SubagentStop` hook events (default debug-log
-      branch). Need `agent.subagentStart` / `agent.subagentEnd` topics so clients can render
-      the parent character's Task subtask state. Surfaced during Day 13-14.
-- [ ] `PtyHost.onData` calls `sink.broadcastPty(...)` unconditionally — never consults the
-      Day 9-10 backpressure flag. `BroadcastSink.register` exposes `onPause`/`onResume`
-      callbacks for exactly this. Wire the PTY pump to pause `pty.read()` when a connection
-      backs up so we don't OOM on a wedged client.
-- [ ] `src/configPersistence.ts` (VS Code extension) writes `{ externalAssetDirectories }`
-      only — strips the daemon's `logLevel` field on next write. Move to a per-field patch
-      that preserves unknown keys, or have the extension read+merge before writing.
-- [ ] Hook script discovery chain (`daemon/src/hooks/providers/hook/claude/hooks/claudeHookSrc.ts`)
-      still falls through to `server.json` after `daemon.json` lacks a `hookPort`. Now that
-      the daemon owns the hook server, that branch is only reachable when the extension is
-      running without a daemon. Either decide to deprecate the extension-hosted server
-      (Phase 6) or leave the branch + add a comment that it's transitional.
-- [ ] `agent.spawn` reports synchronous spawn failures via `err('spawn_failed', …)`, but
-      node-pty's ENOENT for a missing `claude` binary lands asynchronously through `onExit`
-      with exit code 127 — currently broadcast as a generic `agent.exited`. `agent.exited`
-      now carries `reason: "claude_missing"` but the client-facing `agent.spawnFailed` toast
-      is only emitted by `reviveAgentsOnBoot`, not by live `agent.spawn`. Add the same
-      classification to `agent.spawn`'s onExit so clients can toast on fresh spawns too.
-- [ ] `agent.spawn` persists `palette: 0, hueShift: 0` for every new agent. Port the
-      extension's `pickDiversePalette()` (counts current characters, picks least-used; first
-      6 get unique skin, beyond that repeats with random hue rotation).
-- [ ] `daemon/src/hooks/eventHandler.ts:1` — `TODO(Standalone version)` comment calls for moving
-      `timerManager` + `types` into `daemon/src/` to eliminate cross-package imports from
-      `src/` via the widened `rootDir`. No urgency while the shared tsconfig include works,
-      but correct long-term once Phase 3+ lands enough daemon-only infra.
-- [ ] `daemon/src/hooks/package.json` CJS-scope override is a workaround for the extension's
-      CJS scope. Long-term: either make the extension source ESM (esbuild still emits CJS) or
-      split the hooks subtree to its own package. Works today; unusual.
-- [ ] Daemon boot logic has no unit tests — only manually smoke-tested. Add once Day 5+ lands
-      enough infrastructure to make the test meaningful.
-- [ ] E2E suite covers exactly one scenario (clicking + Agent and seeing the JSONL appear).
-      More scenarios would be high-value insurance against regressions in later phases.
+Most Phase 0-1 debt was cleared in the debt batch (see Recently done). Remaining
+items are deliberate deferrals with a documented decision/owner:
+
+- [ ] **`PtyHost` cooperative backpressure — REJECTED, not implemented.** The
+      per-subscriber bounded ring (`SUBSCRIBER_QUEUE_MAX`) is the OOM ceiling.
+      Pausing a shared PTY when one viewer wedges would freeze the stream for all
+      viewers (worse failure mode). `PtyHost.pause()/resume()` exist as a dormant
+      capability; `BackpressureCallbacks` hooks remain for future _per-agent_ flow
+      control (e.g. paste-storm throttling), which needs its own design. Rationale
+      documented in `broadcastSink.ts`. Revisit only with that design.
+- [ ] **Move `timerManager` + `types` into `daemon/src/`** (`eventHandler.ts:1`
+      `TODO(Standalone version)`). Eliminates cross-package imports from `src/` via
+      the widened `rootDir`. **Deferred to Phase 6** — no urgency while the shared
+      tsconfig include works; a 20+ file cross-package move not worth doing now.
+- [ ] **`daemon/src/hooks/package.json` CJS-scope override** — workaround for the
+      extension's CJS scope. Documented inline (`"//"` key). Resolve alongside the
+      Phase 6 ESM/extension decision (make extension ESM or split hooks to its own
+      package). Works today.
+- [ ] **`kittyIds` SHA1 allocator vs wire `djb2` — decision needed at Day 17.**
+      The allocator is unused; the wire keys images by `djb2(assetId)`. Either wire
+      the allocator (per-tier×zoom ids, richer caching) or delete it. Rationale +
+      decision point documented in `kittyIds.ts`. Don't leave both indefinitely.
+- [ ] **More E2E scenarios.** Suite covers one scenario (+ Agent → JSONL appears).
+      Deferred — Playwright suites are slow to add well; not worth doing badly now.
+      Daemon boot is now covered by `discovery.test.ts` (unit) instead.
 
 ## Design open questions (not blocking)
 

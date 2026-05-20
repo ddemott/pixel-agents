@@ -42,6 +42,9 @@ export interface PtyHandle {
   write(data: string): void;
   resize(cols: number, rows: number): void;
   kill(signal?: string): void;
+  /** node-pty flow control — pause/resume the child's output stream. */
+  pause?(): void;
+  resume?(): void;
 }
 
 export type SpawnFn = (
@@ -179,6 +182,46 @@ export class PtyHost {
           error: e instanceof Error ? e.message : String(e),
         },
         'kill threw',
+      );
+    }
+  }
+
+  /**
+   * Pause the child's output via node-pty flow control. No-op after exit, or if
+   * the underlying handle predates pause/resume support. Dormant capability: no
+   * caller gates on backpressure today (see `BackpressureCallbacks` rationale —
+   * the per-subscriber ring is the OOM ceiling), but the hook exists for future
+   * per-agent flow control without re-plumbing.
+   */
+  pause(): void {
+    if (this.exited) return;
+    try {
+      this.handle.pause?.();
+    } catch (e) {
+      this.logger.warn(
+        {
+          module: 'ptyHost',
+          agentId: this.agentId,
+          error: e instanceof Error ? e.message : String(e),
+        },
+        'pause threw',
+      );
+    }
+  }
+
+  /** Resume a paused child's output. No-op after exit. Companion to `pause`. */
+  resume(): void {
+    if (this.exited) return;
+    try {
+      this.handle.resume?.();
+    } catch (e) {
+      this.logger.warn(
+        {
+          module: 'ptyHost',
+          agentId: this.agentId,
+          error: e instanceof Error ? e.message : String(e),
+        },
+        'resume threw',
       );
     }
   }

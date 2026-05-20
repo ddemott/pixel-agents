@@ -33,6 +33,29 @@ export function readConfig(): PixelAgentsConfig {
   }
 }
 
+/**
+ * Merge the extension's owned fields over the existing on-disk config so keys
+ * written by other owners (notably the daemon's `logLevel`) survive. The
+ * extension only owns `externalAssetDirectories`; everything else passes through
+ * untouched. Pure — exported for testing.
+ */
+export function mergeConfig(
+  existing: Record<string, unknown>,
+  config: PixelAgentsConfig,
+): Record<string, unknown> {
+  return { ...existing, ...config };
+}
+
+function readRawConfig(filePath: string): Record<string, unknown> {
+  try {
+    if (!fs.existsSync(filePath)) return {};
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as unknown;
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {}; // malformed file → start fresh (don't propagate stale keys)
+  }
+}
+
 export function writeConfig(config: PixelAgentsConfig): void {
   const filePath = getConfigFilePath();
   const dir = path.dirname(filePath);
@@ -40,7 +63,10 @@ export function writeConfig(config: PixelAgentsConfig): void {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    const json = JSON.stringify(config, null, 2);
+    // Read-merge-write so we don't strip fields owned by the daemon (logLevel)
+    // or future writers — last-writer-wins only for our own keys.
+    const merged = mergeConfig(readRawConfig(filePath), config);
+    const json = JSON.stringify(merged, null, 2);
     const tmpPath = filePath + '.tmp';
     fs.writeFileSync(tmpPath, json, 'utf-8');
     fs.renameSync(tmpPath, filePath);

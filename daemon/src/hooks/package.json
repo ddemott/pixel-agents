@@ -1,3 +1,4 @@
 {
+  "//": "Scopes daemon/src/hooks to CommonJS inside the otherwise-ESM daemon so the CJS VS Code extension can import the hook tree without ESM/CJS interop errors. Workaround (debt, see TODO.md): long-term, make the extension source ESM or split hooks into its own package. Works today.",
   "type": "commonjs"
 }

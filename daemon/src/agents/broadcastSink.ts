@@ -13,6 +13,19 @@ import type { Evt } from '../rpc/wire.js';
  */
 export const SUBSCRIBER_QUEUE_MAX = 256;
 
+/**
+ * Pause/resume hooks for a subscriber's kernel write buffer. These are wired and
+ * *available*, but no caller currently uses them to gate a producer.
+ *
+ * Decision (debt review): cooperative "pause the PTY when a viewer backs up" was
+ * rejected. With many viewers per agent it trades "one wedged client loses bytes"
+ * for "one wedged client freezes the stream for ALL viewers" — strictly worse for
+ * a multi-client TUI. The per-subscriber bounded ring (`SUBSCRIBER_QUEUE_MAX`) is
+ * the chosen OOM ceiling: a wedged client's queue caps and drops oldest frames
+ * while healthy clients keep real-time output. The hooks remain for any future
+ * *per-agent* flow control (e.g. throttling during paste storms), which would
+ * need its own design — don't re-add the global pause without revisiting this.
+ */
 export interface BackpressureCallbacks {
   /** Fires the first time the kernel buffer signals high-water-mark. */
   onPause?: () => void;

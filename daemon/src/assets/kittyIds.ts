@@ -9,6 +9,14 @@ const MAX_ID = 0x7fff_ffff; // 31-bit max; Kitty protocol i= field is u32
  * 0 is never emitted (reserved / invalid in the Kitty protocol).
  * Linear probe on collision — the set of live IDs is small in practice
  * (O(assets × tiers × zoom-levels)), so this never runs long.
+ *
+ * DEBT / RECONCILE (decision needed): this allocator is currently UNUSED. The
+ * shipped wire path (`assets.requestBlob` here + the Rust client) keys Kitty
+ * images by `djb2(assetId)` — one id per asset, no tier/zoom dimension. This
+ * SHA1 allocator was built for a richer scheme (distinct ids per tier × zoom)
+ * the protocol doesn't yet use. Pick during the Day 17 compositor: either wire
+ * this over the wire and drop djb2 (gaining per-zoom image caching), or delete
+ * it and keep djb2. Don't leave both indefinitely. Until then djb2 is the truth.
  */
 export class KittyIdAllocator {
   /** key → allocated id */

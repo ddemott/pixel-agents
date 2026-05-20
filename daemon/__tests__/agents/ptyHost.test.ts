@@ -8,12 +8,18 @@ import { createNullLogger } from '../../src/logging/logger.js';
 function makeFakeHandle(): {
   handle: PtyHandle;
   fire: { data(s: string | Buffer): void; exit(code: number, signal?: number): void };
-  recorded: { writes: string[]; resizes: Array<[number, number]>; signals: string[] };
+  recorded: {
+    writes: string[];
+    resizes: Array<[number, number]>;
+    signals: string[];
+    flow: string[];
+  };
 } {
   const recorded = {
     writes: [] as string[],
     resizes: [] as Array<[number, number]>,
     signals: [] as string[],
+    flow: [] as string[],
   };
   let dataCb: ((d: string | Buffer) => void) | null = null;
   let exitCb: ((e: { exitCode: number; signal?: number }) => void) | null = null;
@@ -35,6 +41,12 @@ function makeFakeHandle(): {
     },
     kill(signal) {
       recorded.signals.push(signal ?? 'SIGTERM');
+    },
+    pause() {
+      recorded.flow.push('pause');
+    },
+    resume() {
+      recorded.flow.push('resume');
     },
   };
   return {
@@ -131,5 +143,32 @@ describe('PtyHost', () => {
     expect(fake.recorded.writes).toEqual(['hi', 'bin']);
     expect(fake.recorded.resizes).toEqual([[100, 30]]);
     expect(fake.recorded.signals).toEqual(['SIGINT']);
+  });
+
+  // WHY: pause/resume are a dormant flow-control capability (no caller gates on
+  // backpressure today — the BroadcastSink ring is the OOM ceiling). They exist
+  // so future per-agent flow control needs no re-plumbing. Test the contract:
+  // forwarded while alive, no-op after exit, matching write/resize/kill.
+  it('forwards pause/resume while alive', () => {
+    const fake = makeFakeHandle();
+    const host = new PtyHost(
+      { agentId: 1, command: 'x', args: [], cwd: '/', logger: logger(), spawn: () => fake.handle },
+      { onData: () => {}, onExit: () => {} },
+    );
+    host.pause();
+    host.resume();
+    expect(fake.recorded.flow).toEqual(['pause', 'resume']);
+  });
+
+  it('pause/resume are no-ops after exit', () => {
+    const fake = makeFakeHandle();
+    const host = new PtyHost(
+      { agentId: 1, command: 'x', args: [], cwd: '/', logger: logger(), spawn: () => fake.handle },
+      { onData: () => {}, onExit: () => {} },
+    );
+    fake.fire.exit(0);
+    host.pause();
+    host.resume();
+    expect(fake.recorded.flow).toEqual([]);
   });
 });

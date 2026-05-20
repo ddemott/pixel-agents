@@ -76,7 +76,15 @@ function discoverFromDaemon(): HookTarget | null {
   };
 }
 
-/** Legacy: VS Code extension's PixelAgentsServer publishes server.json. */
+/**
+ * Legacy: VS Code extension's PixelAgentsServer publishes server.json.
+ *
+ * TRANSITIONAL (debt review): now that the daemon owns the hook server, this
+ * branch is only reachable when the extension runs *without* a daemon. Keep it
+ * until the extension-hosted server is formally deprecated (Phase 6); the
+ * env → daemon.json → server.json order means a live daemon always wins, so
+ * this never shadows the daemon path.
+ */
 function discoverFromServer(): HookTarget | null {
   const cfg = readJson<ServerConfig>(SERVER_JSON);
   if (!cfg || typeof cfg.port !== 'number' || typeof cfg.token !== 'string') return null;
