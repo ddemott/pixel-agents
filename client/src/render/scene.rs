@@ -397,7 +397,7 @@ pub fn compose_t1k_frame(
 }
 
 /// Reverse-lookup a decoded asset by its djb2 image id (small N; linear scan).
-fn asset_by_image_id<'a>(assets: &'a AssetStore, image_id: u32) -> Option<&'a crate::assets::DecodedAsset> {
+fn asset_by_image_id(assets: &AssetStore, image_id: u32) -> Option<&crate::assets::DecodedAsset> {
     assets
         .iter()
         .find(|(id, _)| crate::assets::string_asset_id(id) == image_id)

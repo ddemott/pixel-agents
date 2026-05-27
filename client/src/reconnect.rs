@@ -52,6 +52,12 @@ impl ReconnectState {
     }
 }
 
+impl Default for ReconnectState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Try to spawn a detached daemon process.
 /// Returns true if a child was forked.
 /// No-op (returns false) until `pixel-agents-daemon` lands as an installed binary.

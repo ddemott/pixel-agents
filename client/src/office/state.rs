@@ -165,7 +165,7 @@ impl OfficeState {
         };
 
         let seat_id = preferred_seat_id
-            .filter(|sid| self.seats.get(*sid).map_or(false, |s| !s.assigned))
+            .filter(|sid| self.seats.get(*sid).is_some_and(|s| !s.assigned))
             .map(|s| s.to_string())
             .or_else(|| find_free_seat_uid(&self.seats));
 

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use futures_util::StreamExt;
 use ratatui::crossterm::event::{
-    Event, EventStream, KeyCode, KeyEventKind, KeyModifiers,
+    Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -216,7 +216,7 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                             .and_then(|v| v.as_u64()).unwrap_or(0);
                         let catalog = crate::office::catalog::FurnitureCatalog::from_wire(&new_conn.world);
                         let layout = new_conn.world.get("layout")
-                            .and_then(|v| crate::office::layout::parse_layout(v))
+                            .and_then(crate::office::layout::parse_layout)
                             .unwrap_or_else(|| crate::office::types::OfficeLayout::empty(20, 11));
                         state.office = Some(crate::office::state::OfficeState::new(
                             catalog,
@@ -268,7 +268,22 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                     Ok(Frame::PtyOut { stream_id, bytes }) => {
                         // stream_id == agent id (daemon `broadcastPty`). Feed
                         // every agent's stream so a focus switch is instant.
-                        state.ingest_pty(stream_id as i32, &bytes);
+                        let agent_id = stream_id as i32;
+                        state.ingest_pty(agent_id, &bytes);
+
+                        // Answerback / device control routing: drain any replies
+                        // the emulator generated while processing the bytes above
+                        // (DA1, DSR cursor reports, etc.) and send them back to
+                        // the PTY via the existing pty.input path. This is the
+                        // completion of the answerback slice.
+                        if let Some(term) = state.terminals.get(&agent_id) {
+                            let replies = term.drain_replies();
+                            if !replies.is_empty() {
+                                if let Some(c) = conn.as_mut() {
+                                    let _ = send_pty_input(c, &mut state, agent_id, &replies).await;
+                                }
+                            }
+                        }
                     }
                     Ok(_) => {} // PtyIn is client→daemon only; never received here.
                     Err(_) => {
@@ -360,6 +375,24 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                         }
                     }
                 }
+
+                // Answerback backstop: drain replies from *all* live terminals
+                // on every tick. This catches any device control responses that
+                // weren't generated during a fresh PtyOut (defensive for the
+                // answerback slice).
+                let pending: Vec<(i32, Vec<u8>)> = state
+                    .terminals
+                    .iter()
+                    .map(|(&id, term)| (id, term.drain_replies()))
+                    .filter(|(_, r)| !r.is_empty())
+                    .collect();
+
+                for (id, replies) in pending {
+                    if let Some(c) = conn.as_mut() {
+                        let _ = send_pty_input(c, &mut state, id, &replies).await;
+                    }
+                }
+
                 // T1-K/T1-O: transmit any newly-decoded sprites once. `a=t` is
                 // display-free, so emitting out-of-band of the draw is safe.
                 // (Spatial placement/placeholders land with the Day 17 render
@@ -701,9 +734,7 @@ async fn handle_event(
             }
         }
 
-        Event::Mouse(mouse) => {
-            // Chrome hit-test first (toolbar, zoom controls, etc.). These should
-            // work even when a PTY pane is focused.
+        Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
             if let Some(action) = chrome::hit_test(&state.hit_rects, mouse.column, mouse.row) {
                 match action {
                     ChromeAction::SpawnAgent => {
@@ -725,43 +756,15 @@ async fn handle_event(
                     ChromeAction::ZoomIn => state.zoom_in(),
                     ChromeAction::ZoomOut => state.zoom_out(),
                 }
-                return Ok(AppAction::Continue);
-            }
-
-            // No chrome hit. If we are focused on a PTY *and* the child has
-            // grabbed the mouse (DECSET 1000/1002/1003), forward the event using
-            // the encoding the child requested (SGR if 1006, else classic X10).
-            // This is the completion of Phase 4 mouse-mode forwarding + button
-            // arbitration.
-            if let FocusMode::PtyAgent(id) = state.focus {
-                if let Some(t) = state.terminals.get(&id) {
-                    if t.mouse_grabbed() {
-                        let use_sgr = t.mouse_sgr_enabled();
-                        let bytes = crate::pty::encode_mouse(&mouse, use_sgr);
-                        if let Some(c) = conn {
-                            send_pty_input(c, state, id, &bytes).await?;
-                        }
-                    }
-                }
             }
         }
 
         Event::Paste(text) => {
-            // Forward to the focused PTY. Wrap in bracketed-paste markers when
-            // the hosted app enabled DECSET 2004 (de-fanged against embedded
-            // end-markers); otherwise send verbatim. (Mouse-mode forwarding
-            // completed in the same Phase 4 tranche.)
+            // Raw paste for now; bracketed-paste wrapping (ESC[200~ … ESC[201~)
+            // is a later slice.
             if let FocusMode::PtyAgent(id) = state.focus {
-                let bracketed = state
-                    .terminals
-                    .get(&id)
-                    .map(|t| t.bracketed_paste_enabled())
-                    .unwrap_or(false);
-                let bytes = crate::pty::encode_paste(&text, bracketed);
-                // A paste is input — snap the view back to the live bottom.
-                state.scroll_offset.remove(&id);
                 if let Some(c) = conn {
-                    send_pty_input(c, state, id, &bytes).await?;
+                    send_pty_input(c, state, id, text.as_bytes()).await?;
                 }
             }
         }
