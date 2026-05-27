@@ -216,7 +216,7 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                             .and_then(|v| v.as_u64()).unwrap_or(0);
                         let catalog = crate::office::catalog::FurnitureCatalog::from_wire(&new_conn.world);
                         let layout = new_conn.world.get("layout")
-                            .and_then(|v| crate::office::layout::parse_layout(v))
+                            .and_then(crate::office::layout::parse_layout)
                             .unwrap_or_else(|| crate::office::types::OfficeLayout::empty(20, 11));
                         state.office = Some(crate::office::state::OfficeState::new(
                             catalog,
@@ -268,7 +268,22 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                     Ok(Frame::PtyOut { stream_id, bytes }) => {
                         // stream_id == agent id (daemon `broadcastPty`). Feed
                         // every agent's stream so a focus switch is instant.
-                        state.ingest_pty(stream_id as i32, &bytes);
+                        let agent_id = stream_id as i32;
+                        state.ingest_pty(agent_id, &bytes);
+
+                        // Answerback / device control routing: drain any replies
+                        // the emulator generated while processing the bytes above
+                        // (DA1, DSR cursor reports, etc.) and send them back to
+                        // the PTY via the existing pty.input path. This is the
+                        // completion of the answerback slice.
+                        if let Some(term) = state.terminals.get(&agent_id) {
+                            let replies = term.drain_replies();
+                            if !replies.is_empty() {
+                                if let Some(c) = conn.as_mut() {
+                                    let _ = send_pty_input(c, &mut state, agent_id, &replies).await;
+                                }
+                            }
+                        }
                     }
                     Ok(_) => {} // PtyIn is client→daemon only; never received here.
                     Err(_) => {
@@ -360,6 +375,24 @@ pub async fn run(caps: ClientCapabilities) -> Result<()> {
                         }
                     }
                 }
+
+                // Answerback backstop: drain replies from *all* live terminals
+                // on every tick. This catches any device control responses that
+                // weren't generated during a fresh PtyOut (defensive for the
+                // answerback slice).
+                let pending: Vec<(i32, Vec<u8>)> = state
+                    .terminals
+                    .iter()
+                    .map(|(&id, term)| (id, term.drain_replies()))
+                    .filter(|(_, r)| !r.is_empty())
+                    .collect();
+
+                for (id, replies) in pending {
+                    if let Some(c) = conn.as_mut() {
+                        let _ = send_pty_input(c, &mut state, id, &replies).await;
+                    }
+                }
+
                 // T1-K/T1-O: transmit any newly-decoded sprites once. `a=t` is
                 // display-free, so emitting out-of-band of the draw is safe.
                 // (Spatial placement/placeholders land with the Day 17 render
@@ -701,29 +734,27 @@ async fn handle_event(
             }
         }
 
-        Event::Mouse(mouse) => {
-            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                if let Some(action) = chrome::hit_test(&state.hit_rects, mouse.column, mouse.row) {
-                    match action {
-                        ChromeAction::SpawnAgent => {
-                            if let Some(c) = conn {
-                                send_agent_spawn(c, state).await?;
-                            } else {
-                                state.set_status("Not connected to daemon");
-                            }
+        Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+            if let Some(action) = chrome::hit_test(&state.hit_rects, mouse.column, mouse.row) {
+                match action {
+                    ChromeAction::SpawnAgent => {
+                        if let Some(c) = conn {
+                            send_agent_spawn(c, state).await?;
+                        } else {
+                            state.set_status("Not connected to daemon");
                         }
-                        ChromeAction::ToggleLayout => {
-                            state.focus = match &state.focus {
-                                FocusMode::Editor => FocusMode::Office,
-                                _ => FocusMode::Editor,
-                            };
-                        }
-                        ChromeAction::OpenSettings => {
-                            state.focus = FocusMode::Modal;
-                        }
-                        ChromeAction::ZoomIn => state.zoom_in(),
-                        ChromeAction::ZoomOut => state.zoom_out(),
                     }
+                    ChromeAction::ToggleLayout => {
+                        state.focus = match &state.focus {
+                            FocusMode::Editor => FocusMode::Office,
+                            _ => FocusMode::Editor,
+                        };
+                    }
+                    ChromeAction::OpenSettings => {
+                        state.focus = FocusMode::Modal;
+                    }
+                    ChromeAction::ZoomIn => state.zoom_in(),
+                    ChromeAction::ZoomOut => state.zoom_out(),
                 }
             }
         }
