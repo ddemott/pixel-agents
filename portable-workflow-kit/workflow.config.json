@@ -1,0 +1,102 @@
+{
+  "name": "Reusable Development Workflow Configuration",
+  "version": "1.2.0",
+  "description": "Single source of truth for branching, quality gates, testing, docs hygiene, and commit automation. Set projectType and customize the active 'commands' block. Scripts read this file to stay type-appropriate.",
+  "projectType": "node-fullstack",
+  "_projectTypeGuidance": "THE most important field for portability. Scripts (prepare-commit, hooks, etc.) read this + the matching profile so they never blindly run 'eslint' or 'tsc' on a Python project. After picking a type, copy its profile into the top-level 'commands' object and edit the concrete command strings for your repo. Starters: node-fullstack, python, generic.",
+  "projectTypeProfiles": {
+    "node-fullstack": {
+      "checks": "npm run format:check && npm run lint && npx tsc --noEmit && cd dashboard && npx tsc --noEmit",
+      "unitTests": "npm test",
+      "build": "npm run build && cd dashboard && npm run build",
+      "lint": "npm run lint",
+      "formatCheck": "npm run format:check",
+      "docDriftCheck": "npm run verify:claude-md || true",
+      "e2e": "cd dashboard && npx playwright test --grep",
+      "focusedTestScan": "grep -r --include=\"*.test.*\" --include=\"*.spec.*\" -E \"(\\.only\\(|\\.skip\\()\" src/ dashboard/ --exclude-dir=node_modules 2>/dev/null || true",
+      "notes": "Full-stack TypeScript SaaS (Next.js + Node/Fastify backend). All the TS + Vitest + Playwright tooling applies."
+    },
+    "python": {
+      "checks": "ruff check . && black --check .",
+      "unitTests": "pytest -q --tb=line",
+      "build": "python -m py_compile $(find . -name '*.py' 2>/dev/null | head -30) 2>/dev/null || echo '(no build step or replace with mypy)'",
+      "lint": "ruff check .",
+      "formatCheck": "black --check .",
+      "docDriftCheck": "echo 'Define your doc/schema drift detector here (or empty string for none)'",
+      "e2e": "echo 'No E2E configured (replace with pytest-playwright or similar if you have browser tests)'",
+      "focusedTestScan": "grep -rnE 'pytest.mark.(skip|xfail|only|focus)|@pytest.mark.skip|def test_.*_only' --include='*test*.py' --include='*spec*.py' . --exclude-dir=.venv --exclude-dir=__pycache__ 2>/dev/null || true",
+      "notes": "Pure Python (FastAPI, Django, Flask, CLI tools, etc.). ruff + black + pytest are the expected tools. No npm, no TypeScript."
+    },
+    "generic": {
+      "checks": "echo 'Replace with: your lint + typecheck + format equivalent (one command)'",
+      "unitTests": "echo 'Replace with your test runner (pytest, go test, cargo test, etc.)'",
+      "build": "echo 'Replace with your build (go build, cargo build, or empty for dynamic languages)'",
+      "lint": "echo 'Replace with ruff/golangci-lint/eslint/etc. or empty'",
+      "formatCheck": "echo 'Replace with black --check / gofmt / prettier or empty'",
+      "docDriftCheck": "echo 'Your doc drift or schema drift detector (or empty)'",
+      "e2e": "echo 'Your E2E command or empty'",
+      "focusedTestScan": "echo 'Grep expression for focused/skip tests in your language, or empty to skip'",
+      "notes": "Starting point for anything else (Go, Rust, mixed, mobile, etc.). You must fill in the 'commands' block below."
+    }
+  },
+  "commands": {
+    "_comment": "Customized for pixel-agents (root + webview-ui + daemon subprojects + client Rust). Uses existing check-types (covers multiple tsconfigs), format:check, and test split.",
+    "checks": "npm run format:check && npm run lint && npm run check-types",
+    "unitTests": "npm test",
+    "build": "npm run build",
+    "lint": "npm run lint",
+    "formatCheck": "npm run format:check",
+    "docDriftCheck": "echo 'No automated doc-drift detector yet. Manually ensure CLAUDE.md, ARCHITECTURE.md, TODO.md, and CONTRIBUTING.md are updated on every feature.'",
+    "e2e": "npm run e2e",
+    "focusedTestScan": "grep -r --include=\"*.test.*\" --include=\"*.spec.*\" -E \"(\\.only\\(|\\.skip\\()\" src/ daemon/ webview-ui/ e2e/ --exclude-dir=node_modules 2>/dev/null || true"
+  },
+  "branching": {
+    "mainBranch": "main",
+    "allowedPrefixes": [
+      "feat/",
+      "fix/",
+      "test/",
+      "refactor/",
+      "docs/",
+      "chore/"
+    ],
+    "requireIssueForNonTrivialWork": true
+  },
+  "scripts": {
+    "createBranch": "bash scripts/create-feature-branch.sh",
+    "setupHooks": "bash scripts/setup-hooks.sh",
+    "removeHooks": "bash scripts/remove-hooks.sh"
+  },
+  "documentation": {
+    "filesThatMustBeUpdated": [
+      "README.md",
+      "CONTRIBUTING.md",
+      "CLAUDE.md",
+      "ARCHITECTURE.md",
+      "TODO.md"
+    ],
+    "driftDetectorScript": "echo 'No automated doc-drift detector configured. Follow the internal discipline in CLAUDE.md (update docs on every feature).'",
+    "notes": "pixel-agents: VS Code extension + React webview + Node daemon + Rust client. Already has husky + prepare script + strong internal workflow (slash commands). This config drives prepare-commit and hooks."
+  },
+  "testing": {
+    "require5WComments": true,
+    "runRelevantE2E": true,
+    "e2eFramework": "playwright-or-pytest",
+    "unitFramework": "vitest-or-pytest"
+  },
+  "hooks": {
+    "useHusky": true,
+    "preCommit": "staged-files-only",
+    "prePush": "full-checks-plus-unit-tests"
+  },
+  "commitProcess": {
+    "useCommitCodeSkill": true,
+    "enforceExplicitApproval": true,
+    "conventionalCommits": true
+  },
+  "checklist": {
+    "localChecklistFile": "BRANCH_CHECKLIST.md",
+    "prTemplate": ".github/pull_request_template.md"
+  },
+  "notes": "Edit projectType, copy the matching profile into the 'commands' section, customize the command strings for your actual tools, and the portable scripts will adapt automatically. This is how the same governance travels cleanly to Python, Go, or any other project without forcing Node-only rituals."
+}

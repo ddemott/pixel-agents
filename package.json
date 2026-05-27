@@ -69,7 +69,11 @@
     "test": "npm run test:webview && npm run test:daemon",
     "e2e": "playwright test --config e2e/playwright.config.ts",
     "e2e:debug": "playwright test --config e2e/playwright.config.ts --debug",
-    "knip": "knip"
+    "knip": "knip",
+    "create-branch": "bash scripts/create-feature-branch.sh",
+    "prepare-commit": "bash scripts/prepare-commit.sh",
+    "remove-hooks": "bash scripts/remove-hooks.sh",
+    "setup-hooks": "bash scripts/setup-hooks.sh"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

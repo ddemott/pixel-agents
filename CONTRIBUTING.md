@@ -24,17 +24,108 @@ npm run build
 
 Then press **F5** in VS Code to launch the Extension Development Host.
 
-## Development Workflow
+## Development Workflow (The Proper Way)
 
-For development with live rebuilds, run:
+Pixel Agents uses a disciplined, skill-assisted workflow to keep quality high and history clean. The canonical tools are the Grok skills `/start-feature` and `/commit-code`, plus `/review`.
+
+The project has also adopted the portable development workflow (see `CLAUDE.md` → "Portable Workflow Layer"). This adds two npm commands that complement the slash-command system:
+
+- `npm run create-branch <type>/<name>` for consistent branch creation + initial gates
+- `npm run prepare-commit` for running the full automated quality gate before committing
+
+The canonical starting point for any work remains `/start-feature`. The portable scripts provide additional structure and a single source of truth (`workflow.config.json`) for what the quality gates actually are.
+
+### 1. Starting Work — Always use `/start-feature`
 
 ```bash
-npm run watch
+/start-feature "add proper mouse forwarding for PTY focus in TUI client"
 ```
 
-This starts parallel watchers for both the extension backend (esbuild) and TypeScript type-checking.
+This skill will:
 
-> **Note:** The webview (Vite) is not included in `watch` — after changing webview code, run `npm run build:webview` or the full `npm run build`.
+- Verify you are on a clean `main`
+- Create a properly named feature branch (`feat/...`, `fix/...`, etc.)
+- Run the baseline quality gates (`check-types`, `lint`, `build`, `test`)
+- Add a tracking entry to `TODO.md`
+- Print the full lifecycle checklist you must follow
+
+**Never** start work directly on `main` or with a dirty tree.
+
+### 2. While Developing (Iterative Gates)
+
+Run these frequently:
+
+```bash
+# Fast feedback loop
+npm run lint
+npm run check-types
+
+# Relevant tests only (do not blindly run the full slow suite every time)
+npm run test:daemon          # when touching daemon/
+npm run test:webview         # when touching webview-ui/
+npm test                     # full unit + integration suite
+
+# E2E (expensive — run selectively when you touch user flows, PTY, focus, etc.)
+npm run e2e                  # or a specific test file
+npm run e2e:debug            # for iteration
+```
+
+**Rules while coding:**
+
+- Fix lint, type, and test failures you introduce immediately.
+- Every new or meaningfully changed test **must** include 5W diagnostic comments (Who / What / When / Where / Why) so a future reader understands the intent without spelunking.
+- Update documentation (`*.md` files) as you go when behavior, commands, or architecture changes.
+- Use `/review --local` periodically for self-review.
+
+### 3. When the Work Is Ready to Commit — Use `/commit-code`
+
+```bash
+/commit-code
+```
+
+This skill (in combination with the project's husky + lint-staged hooks) enforces:
+
+- All lint + type + build gates
+- Relevant tests pass (unit + daemon + webview)
+- All affected `*.md` files are updated (CLAUDE.md, ARCHITECTURE.md, TODO.md, this file, etc.)
+- Completed items are moved from `TODO.md` into `RESOLVED.md`
+- Proper conventional commit message
+- Secret scanning (gitleaks)
+- Branch hygiene (you should be on a feature branch)
+
+The skill will stop you if any gate is red.
+
+### 4. Submitting a Pull Request
+
+1. Keep your branch rebased on latest `main` (`git pull --rebase origin main`).
+2. When ready, push and open a PR.
+3. CI will run the full matrix (including E2E on Linux/macOS/Windows).
+4. Use `/review --pr <number>` (or the GitHub UI) for a proper code review.
+5. Address all feedback.
+6. Once approved and CI is green, the PR is squash-merged. The PR title becomes the final commit message on `main`.
+
+### Quick Command Reference
+
+| Goal                                     | Command                                     |
+| ---------------------------------------- | ------------------------------------------- |
+| Start a new feature/fix (recommended)    | `/start-feature "description"`              |
+| Start a new feature/fix (portable)       | `npm run create-branch <type>/<name>`       |
+| Self-review local changes                | `/review --local`                           |
+| Review a branch                          | `/review --branch feat/xxx`                 |
+| Review / prepare a PR                    | `/review --pr 123`                          |
+| Run automated quality gate before commit | `npm run prepare-commit`                    |
+| Finalize and commit                      | `/commit-code`                              |
+| Run full local quality                   | `npm run lint && npm run build && npm test` |
+
+This process exists so that every change that lands on `main` is:
+
+- Well-scoped
+- Well-tested (including 5W test comments)
+- Well-documented
+- Reviewed
+- Free of secrets and obvious technical debt
+
+Following it is not optional for contributions that want to be merged.
 
 ## Running the Mocked Pixel Agent
 
