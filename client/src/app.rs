@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use futures_util::StreamExt;
 use ratatui::crossterm::event::{
-    Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    Event, EventStream, KeyCode, KeyEventKind, KeyModifiers,
 };
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -702,38 +702,66 @@ async fn handle_event(
         }
 
         Event::Mouse(mouse) => {
-            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                if let Some(action) = chrome::hit_test(&state.hit_rects, mouse.column, mouse.row) {
-                    match action {
-                        ChromeAction::SpawnAgent => {
-                            if let Some(c) = conn {
-                                send_agent_spawn(c, state).await?;
-                            } else {
-                                state.set_status("Not connected to daemon");
-                            }
+            // Chrome hit-test first (toolbar, zoom controls, etc.). These should
+            // work even when a PTY pane is focused.
+            if let Some(action) = chrome::hit_test(&state.hit_rects, mouse.column, mouse.row) {
+                match action {
+                    ChromeAction::SpawnAgent => {
+                        if let Some(c) = conn {
+                            send_agent_spawn(c, state).await?;
+                        } else {
+                            state.set_status("Not connected to daemon");
                         }
-                        ChromeAction::ToggleLayout => {
-                            state.focus = match &state.focus {
-                                FocusMode::Editor => FocusMode::Office,
-                                _ => FocusMode::Editor,
-                            };
+                    }
+                    ChromeAction::ToggleLayout => {
+                        state.focus = match &state.focus {
+                            FocusMode::Editor => FocusMode::Office,
+                            _ => FocusMode::Editor,
+                        };
+                    }
+                    ChromeAction::OpenSettings => {
+                        state.focus = FocusMode::Modal;
+                    }
+                    ChromeAction::ZoomIn => state.zoom_in(),
+                    ChromeAction::ZoomOut => state.zoom_out(),
+                }
+                return Ok(AppAction::Continue);
+            }
+
+            // No chrome hit. If we are focused on a PTY *and* the child has
+            // grabbed the mouse (DECSET 1000/1002/1003), forward the event using
+            // the encoding the child requested (SGR if 1006, else classic X10).
+            // This is the completion of Phase 4 mouse-mode forwarding + button
+            // arbitration.
+            if let FocusMode::PtyAgent(id) = state.focus {
+                if let Some(t) = state.terminals.get(&id) {
+                    if t.mouse_grabbed() {
+                        let use_sgr = t.mouse_sgr_enabled();
+                        let bytes = crate::pty::encode_mouse(&mouse, use_sgr);
+                        if let Some(c) = conn {
+                            send_pty_input(c, state, id, &bytes).await?;
                         }
-                        ChromeAction::OpenSettings => {
-                            state.focus = FocusMode::Modal;
-                        }
-                        ChromeAction::ZoomIn => state.zoom_in(),
-                        ChromeAction::ZoomOut => state.zoom_out(),
                     }
                 }
             }
         }
 
         Event::Paste(text) => {
-            // Raw paste for now; bracketed-paste wrapping (ESC[200~ … ESC[201~)
-            // is a later slice.
+            // Forward to the focused PTY. Wrap in bracketed-paste markers when
+            // the hosted app enabled DECSET 2004 (de-fanged against embedded
+            // end-markers); otherwise send verbatim. (Mouse-mode forwarding
+            // completed in the same Phase 4 tranche.)
             if let FocusMode::PtyAgent(id) = state.focus {
+                let bracketed = state
+                    .terminals
+                    .get(&id)
+                    .map(|t| t.bracketed_paste_enabled())
+                    .unwrap_or(false);
+                let bytes = crate::pty::encode_paste(&text, bracketed);
+                // A paste is input — snap the view back to the live bottom.
+                state.scroll_offset.remove(&id);
                 if let Some(c) = conn {
-                    send_pty_input(c, state, id, text.as_bytes()).await?;
+                    send_pty_input(c, state, id, &bytes).await?;
                 }
             }
         }

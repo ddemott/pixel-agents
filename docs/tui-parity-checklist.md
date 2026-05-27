@@ -26,6 +26,7 @@ Status legend (filled by architecture loop):
 - [ ] B2 (MVP) User can type into the focused agent's PTY (interactive `claude`).
 - [ ] B3 (MVP) Resize: PTY rows/cols track the visible pane size.
 - [ ] B4 (MVP) Scrollback per agent.
+- [x] Bx (Phase 4) Mouse protocol forwarding (X10 + SGR) with arbitration — when the PTY has DECSET-grabbed the mouse we emit the correct reports; otherwise client chrome owns the mouse. (Implemented client/src/pty/mod.rs + app.rs; tracked in TODO under Phase 4 slice 6.)
 - [ ] B5 (Full) Click-to-focus character → switches the active terminal pane to that agent.
 - [ ] B6 (Full) Sub-agent click → focuses parent agent's terminal.
 - [ ] B7 (Full) Graceful PTY death: zombie cleanup, status update.
