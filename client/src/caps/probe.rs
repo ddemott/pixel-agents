@@ -66,7 +66,7 @@ impl Perform for ReplyParser {
                 let h = ps.next().unwrap_or(0);
                 let w = ps.next().unwrap_or(0);
                 if w > 0 && h > 0 {
-                    self.result.cell_px = Some((w as u16, h as u16));
+                    self.result.cell_px = Some((w, h));
                 }
             }
         }

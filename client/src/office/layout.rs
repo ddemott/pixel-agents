@@ -34,7 +34,7 @@ pub fn get_blocked_tiles(
             if dr < bg { continue; }
             for dc in 0..entry.footprint_w {
                 let key = (item.col + dc, item.row + dr);
-                if exclude.map_or(true, |ex| !ex.contains(&key)) {
+                if exclude.is_none_or(|ex| !ex.contains(&key)) {
                     tiles.insert(key);
                 }
             }
